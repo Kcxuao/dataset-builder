@@ -20,6 +20,7 @@ from dataset_builder.db.orm import (
     ValidationIssueRow,
 )
 from dataset_builder.generators import InstructionGenerator, QAGenerator
+from dataset_builder.generators.prompts import resolve_prompt
 from dataset_builder.llm import LLMClient
 from dataset_builder.models import Chunk, PipelineStatus, TrainingSample, ValidationIssue, utc_now
 from dataset_builder.parsers import CSVParser, ImportSource, JSONLParser, JSONParser, MarkdownParser, TextParser
@@ -58,10 +59,13 @@ class BuildService:
         content_columns: tuple[str, ...] = (),
         entrypoint: str = "cli",
         parser_workers: int = 1,
+        prompt_preset: str = "default",
+        custom_prompt: str | None = None,
+        model_id: UUID | None = None,
     ) -> BuildSummary:
         prepared = await self.prepare_build(
             path, project_name, generator_mode, splitter_mode, max_chunk_length, overlap,
-            content_field, content_columns, entrypoint, parser_workers,
+            content_field, content_columns, entrypoint, parser_workers, prompt_preset, custom_prompt, model_id,
         )
         return await self.execute_build(prepared.run_id, path)
 
@@ -77,6 +81,9 @@ class BuildService:
         content_columns: tuple[str, ...] = (),
         entrypoint: str = "cli",
         parser_workers: int = 1,
+        prompt_preset: str = "default",
+        custom_prompt: str | None = None,
+        model_id: UUID | None = None,
     ) -> BuildSummary:
         if generator_mode not in {"qa", "instruction"}:
             raise ValueError("generator_mode must be qa or instruction")
@@ -99,6 +106,7 @@ class BuildService:
             raise ValueError("max_chunk_length must be positive and overlap must be smaller")
         if not 1 <= parser_workers <= 16:
             raise ValueError("解析工作线程数必须在 1 到 16 之间")
+        prompt_text = resolve_prompt(generator_mode, prompt_preset, custom_prompt)
 
         project_id, run_id = uuid4(), uuid4()
         async with self.sessions() as session:
@@ -112,6 +120,8 @@ class BuildService:
                     "content_field": content_field, "content_columns": list(content_columns),
                     "entrypoint": entrypoint,
                     "parser_workers": parser_workers,
+                    "prompt_preset": prompt_preset, "prompt_text": prompt_text,
+                    "model_id": str(model_id) if model_id else None,
                     "llm": self._llm_signature(),
                 },
                 started_at=utc_now(),
@@ -133,6 +143,7 @@ class BuildService:
                 configuration["max_chunk_length"], configuration["overlap"],
                 configuration["content_field"], tuple(configuration["content_columns"]),
                 configuration.get("parser_workers", 1),
+                configuration.get("prompt_text"),
             )
         except Exception as exc:
             async with self.sessions() as session:
@@ -156,6 +167,7 @@ class BuildService:
         content_field: str | None,
         content_columns: tuple[str, ...],
         parser_workers: int,
+        prompt_text: str | None,
     ) -> BuildSummary:
         parser = {
             ".txt": TextParser,
@@ -228,7 +240,9 @@ class BuildService:
             await session.commit()
         logger.info("开始生成样本：运行编号 %s，文档 %d 个，内容块 %d 个", run_id, len(documents), len(chunks))
 
-        sample_count, failed_count = await self._generate_chunks(project_id, run_id, chunks, generator_mode, set())
+        sample_count, failed_count = await self._generate_chunks(
+            project_id, run_id, chunks, generator_mode, set(), prompt_text
+        )
         return BuildSummary(project_id, run_id, len(documents), len(chunks), sample_count, failed_count)
 
     async def retry_failed(self, project_id: UUID) -> BuildSummary:
@@ -242,6 +256,7 @@ class BuildService:
             if run.configuration.get("llm") != self._llm_signature():
                 raise ValueError("LLM configuration differs from the original run")
             mode = run.configuration["generator"]
+            prompt_text = run.configuration.get("prompt_text")
             rows = (await session.scalars(
                 select(ChunkRow).join(SourceDocumentRow)
                 .where(
@@ -272,7 +287,7 @@ class BuildService:
             run_id = run.id
         logger.info("开始重试失败内容块：运行编号 %s，待处理 %d 个", run_id, len(chunks))
         sample_count, failed_count = await self._generate_chunks(
-            project_id, run_id, chunks, mode, {(project_id, value) for value in hashes}
+            project_id, run_id, chunks, mode, {(project_id, value) for value in hashes}, prompt_text
         )
         return BuildSummary(project_id, run_id, document_count, len(chunks), sample_count, failed_count)
 
@@ -283,8 +298,11 @@ class BuildService:
         chunks: list[Chunk],
         generator_mode: str,
         seen: set[tuple[UUID, str]],
+        prompt_text: str | None = None,
     ) -> tuple[int, int]:
-        generator = (QAGenerator if generator_mode == "qa" else InstructionGenerator)(self.client, project_id)
+        generator = (QAGenerator if generator_mode == "qa" else InstructionGenerator)(
+            self.client, project_id, system_prompt=prompt_text
+        )
         concurrency = max(1, getattr(getattr(self.client, "settings", None), "concurrency_limit", 1))
         logger.info("开始并发生成：运行编号 %s，模型请求并发上限 %d", run_id, concurrency)
         generation_started = perf_counter()

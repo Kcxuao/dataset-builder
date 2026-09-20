@@ -68,12 +68,49 @@ class ReviewService:
 
     async def set_review(self, sample_id: UUID, status: ReviewStatus) -> dict[str, object]:
         row = await self._row(sample_id)
-        if status == ReviewStatus.APPROVED and (row.validation_status != "passed" or row.is_deleted):
-            raise ValueError("Only validated, non-deleted samples can be approved")
+        self._check_approval(row, status)
         row.review_status = status.value
         row.updated_at = utc_now()
         await self.session.flush()
         return await self._view(row)
+
+    async def bulk_action(self, project_id: UUID, sample_ids: list[UUID], action: str) -> dict[str, object]:
+        if not sample_ids or len(sample_ids) > 200:
+            raise ValueError("一次只能操作 1 到 200 条样本")
+        if action not in {"approved", "rejected", "pending", "delete", "restore"}:
+            raise ValueError("批量操作类型无效")
+        ids = list(dict.fromkeys(sample_ids))
+        rows = (await self.session.scalars(
+            select(TrainingSampleRow).where(
+                TrainingSampleRow.project_id == project_id, TrainingSampleRow.id.in_(ids)
+            )
+        )).all()
+        by_id = {row.id: row for row in rows}
+        updated: list[str] = []
+        skipped: list[dict[str, str]] = []
+        for sample_id in ids:
+            row = by_id.get(sample_id)
+            if row is None:
+                skipped.append({"id": str(sample_id), "reason": "样本不属于当前项目或不存在"})
+                continue
+            if action == "approved" and (row.validation_status != "passed" or row.is_deleted):
+                skipped.append({"id": str(sample_id), "reason": "样本校验未通过或已删除，无法审核通过"})
+                continue
+            if action == "delete":
+                row.is_deleted = True
+            elif action == "restore":
+                row.is_deleted = False
+            else:
+                row.review_status = action
+            row.updated_at = utc_now()
+            updated.append(str(sample_id))
+        await self.session.flush()
+        return {"updated_ids": updated, "skipped": skipped}
+
+    @staticmethod
+    def _check_approval(row: TrainingSampleRow, status: ReviewStatus) -> None:
+        if status == ReviewStatus.APPROVED and (row.validation_status != "passed" or row.is_deleted):
+            raise ValueError("样本校验未通过或已删除，无法审核通过")
 
     async def set_deleted(self, sample_id: UUID, deleted: bool) -> dict[str, object]:
         row = await self._row(sample_id)

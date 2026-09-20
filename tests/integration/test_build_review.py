@@ -103,7 +103,7 @@ async def test_build_review_and_export_flow(tmp_path: Path, monkeypatch: pytest.
                     ])
                     assert invalid["validation_status"] == "failed"
                     assert any(issue["rule"] == "empty_content" for issue in invalid["issues"])
-                    with pytest.raises(ValueError, match="validated"):
+                    with pytest.raises(ValueError, match="校验未通过"):
                         await review.set_review(sample_id, ReviewStatus.APPROVED)
                     edited = await review.edit(sample_id, [
                         Message(role="user", content=" New question "),

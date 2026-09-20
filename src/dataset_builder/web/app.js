@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { projects: [], projectId: null, runId: null, pollTimer: null, lastRunStatus: null, samples: [], sampleId: null, offset: 0, limit: 20 };
+const state = { projects: [], projectId: null, runId: null, pollTimer: null, lastRunStatus: null, samples: [], sampleId: null, offset: 0, limit: 20, presets: {} };
 const stageNames = { created: '任务已创建', importing: '正在导入', parsing: '正在解析', splitting: '正在切分', generating: '正在生成样本', cleaning: '正在清洗', validating: '正在校验', ready_for_review: '等待人工审核', completed: '处理完成', failed: '处理失败', interrupted: '任务已中断' };
 const activeStatuses = new Set(['created', 'importing', 'parsing', 'splitting', 'generating', 'cleaning', 'validating']);
 
@@ -94,6 +94,7 @@ async function loadSamples(selectId = null) {
   $('sample-count').textContent = `${state.samples.length} 条 / 当前页`;
   $('page-label').textContent = String(Math.floor(state.offset / state.limit) + 1);
   $('prev-page').disabled = state.offset === 0; $('next-page').disabled = state.samples.length < state.limit;
+  for (const button of $('bulk-actions').querySelectorAll('button')) button.disabled = !state.samples.length;
   const list = $('samples'); list.replaceChildren();
   if (!state.samples.length) list.append(node('p', 'empty-detail', '当前页没有样本。'));
   for (const sample of state.samples) {
@@ -104,6 +105,25 @@ async function loadSamples(selectId = null) {
   }
   if (selectId && state.samples.some((sample) => sample.id === selectId)) renderDetail(selectId);
   else { state.sampleId = null; $('detail-title').textContent = '选择样本'; $('detail-status').textContent = ''; $('detail-body').replaceChildren(node('div', 'empty-detail', '选择左侧样本查看消息、来源与校验结果。')); }
+}
+async function loadModels(selectedId = '') {
+  const models = await api('/api/models'); const select = $('model-select');
+  select.replaceChildren(); const fallback = node('option', '', '默认环境配置'); fallback.value = ''; select.append(fallback);
+  for (const model of models) { const option = node('option', '', `${model.name} · ${model.model}`); option.value = model.id; select.append(option); }
+  select.value = selectedId;
+}
+function renderPresets() {
+  const mode = $('generator-select').value; const select = $('prompt-preset'); select.replaceChildren();
+  for (const preset of state.presets[mode] || []) { const option = node('option', '', preset.name); option.value = preset.id; select.append(option); }
+  const custom = node('option', '', '自定义提示词'); custom.value = 'custom'; select.append(custom);
+  updatePromptPreview();
+}
+function updatePromptPreview() {
+  const custom = $('prompt-preset').value === 'custom';
+  $('custom-prompt-field').classList.toggle('hidden', !custom);
+  $('custom-prompt').required = custom;
+  const preset = (state.presets[$('generator-select').value] || []).find((item) => item.id === $('prompt-preset').value);
+  $('prompt-preview').textContent = custom ? '系统会自动附加输出格式要求。' : (preset?.prompt || '');
 }
 function messageRow(message = { role: 'user', content: '' }) {
   const row = node('div', 'message-row'); const head = node('div', 'message-row-head');
@@ -141,6 +161,30 @@ async function renderDetail(id) {
   del.addEventListener('click', () => run(async () => { await api(`/api/samples/${id}/deleted`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_deleted: !sample.is_deleted }) }); notice('样本状态已更新。'); await loadSamples(id); })); buttons.append(del); actions.append(buttons); body.append(actions);
 }
 $('new-project').addEventListener('click', showImport);
+$('generator-select').addEventListener('change', renderPresets);
+$('prompt-preset').addEventListener('change', updatePromptPreview);
+$('model-form').addEventListener('submit', (event) => { event.preventDefault(); run(async () => {
+  const form = event.target; const values = Object.fromEntries(new FormData(form));
+  values.temperature = Number(values.temperature); values.max_tokens = Number(values.max_tokens);
+  values.timeout = Number(values.timeout); values.concurrency_limit = Number(values.concurrency_limit);
+  values.max_retries = Number(values.max_retries); values.json_mode = values.json_mode === 'on';
+  values.thinking = values.thinking === '' ? null : values.thinking === 'true';
+  if (!values.api_key) values.api_key = null;
+  const model = await api('/api/models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
+  form.querySelector('[name=api_key]').value = ''; await loadModels(model.id); notice('模型配置已保存并选中。');
+}); });
+$('bulk-actions').addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-action]'); if (!button || !state.samples.length) return;
+  run(async () => {
+    const ids = state.samples.map((sample) => sample.id);
+    const result = await api(`/api/projects/${state.projectId}/samples/bulk`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sample_ids: ids, action: button.dataset.action }),
+    });
+    notice(`已更新 ${result.updated_ids.length} 条，跳过 ${result.skipped.length} 条。${result.skipped[0] ? `原因：${result.skipped[0].reason}` : ''}`);
+    await loadSamples(state.sampleId);
+  });
+});
 $('import-form').addEventListener('submit', (event) => { event.preventDefault(); run(async () => {
   const button = event.target.querySelector('button[type=submit]'); button.disabled = true; button.textContent = '正在上传…'; notice('正在上传文件并创建构建任务…');
   try { const result = await api('/api/projects/build', { method: 'POST', body: new FormData(event.target) }); notice('构建任务已创建，进度会自动更新。'); await loadProjects(result.project_id); }
@@ -154,4 +198,4 @@ $('export-form').addEventListener('submit', (event) => { event.preventDefault();
   const result = await api(`/api/projects/${state.projectId}/exports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
   const link = $('download-link'); link.href = result.download_url; link.classList.remove('hidden'); notice(`已导出 ${result.sample_count} 条样本。`);
 }); });
-run(() => loadProjects());
+run(async () => { state.presets = await api('/api/prompt-presets'); renderPresets(); await loadModels(); await loadProjects(); });

@@ -4,13 +4,11 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
+from dataset_builder.generators.prompts import resolve_prompt
 from dataset_builder.llm import LLMClient
 from dataset_builder.models import Chunk, Message, MessageRole, TrainingSample
 
-QA_SYSTEM_PROMPT = (
-    "根据提供的文本生成一个或多个可由文本直接回答的问题与答案。"
-    "只返回一个 json 对象，不要解释或代码块，格式为 {\"pairs\": [{\"question\": \"...\", \"answer\": \"...\"}]}。"
-)
+QA_SYSTEM_PROMPT = resolve_prompt("qa")
 
 
 class QAPair(BaseModel):
@@ -31,16 +29,17 @@ class QAResponse(BaseModel):
 
 
 class QAGenerator:
-    def __init__(self, client: LLMClient, project_id: UUID) -> None:
+    def __init__(self, client: LLMClient, project_id: UUID, system_prompt: str = QA_SYSTEM_PROMPT) -> None:
         self.client = client
         self.project_id = project_id
+        self.system_prompt = system_prompt
 
     async def generate(self, chunk: Chunk) -> list[TrainingSample]:
         if not chunk.content.strip():
             raise ValueError("Cannot generate QA from an empty Chunk")
         response = await self.client.generate(
             [
-                Message(role=MessageRole.SYSTEM, content=QA_SYSTEM_PROMPT),
+                Message(role=MessageRole.SYSTEM, content=self.system_prompt),
                 Message(role=MessageRole.USER, content=chunk.content),
             ],
             QAResponse,

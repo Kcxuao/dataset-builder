@@ -1,21 +1,22 @@
 """HTTP entry point for the shared dataset building services."""
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from dataset_builder.application.build import BuildService
+from dataset_builder.application.model_configs import ModelConfigInput, ModelConfigService
 from dataset_builder.application.review import ReviewService
 from dataset_builder.config import LLMSettings, Settings
 from dataset_builder.db.orm import (
@@ -28,6 +29,7 @@ from dataset_builder.db.orm import (
 )
 from dataset_builder.db.session import create_engine, create_session_factory
 from dataset_builder.exporters.service import SampleExportService
+from dataset_builder.generators.prompts import list_prompt_presets
 from dataset_builder.llm import OpenAICompatibleClient
 from dataset_builder.models import ExportFileType, ExportFormat, Message, PipelineStatus, ReviewStatus, utc_now
 
@@ -51,6 +53,11 @@ class DeletedPayload(BaseModel):
     is_deleted: bool
 
 
+class BulkPayload(BaseModel):
+    sample_ids: list[UUID] = Field(min_length=1, max_length=200)
+    action: Literal["approved", "rejected", "pending", "delete", "restore"]
+
+
 class ExportPayload(BaseModel):
     format: ExportFormat
     file_type: ExportFileType
@@ -60,13 +67,23 @@ def sessions_for(request: Request) -> async_sessionmaker[AsyncSession]:
     return request.app.state.sessions
 
 
-def llm_client() -> OpenAICompatibleClient:
-    try:
-        settings = LLMSettings()
-    except ValidationError as exc:
-        fields = ", ".join(sorted({"LLM_" + str(error["loc"][0]).upper() for error in exc.errors()}))
-        raise HTTPException(status_code=503, detail=f"模型配置缺失或无效：{fields}") from exc
-    return OpenAICompatibleClient(settings)
+async def selected_client(
+    factory: async_sessionmaker[AsyncSession], model_id: UUID | None,
+    client_factory: Callable[[LLMSettings], object],
+) -> object:
+    if model_id is None:
+        try:
+            settings = LLMSettings()
+        except ValidationError as exc:
+            fields = ", ".join(sorted({"LLM_" + str(error["loc"][0]).upper() for error in exc.errors()}))
+            raise HTTPException(status_code=503, detail=f"模型配置缺失或无效：{fields}") from exc
+    else:
+        async with factory() as session:
+            try:
+                settings = await ModelConfigService(session).settings_for(model_id)
+            except LookupError as exc:
+                raise api_error(exc) from exc
+    return client_factory(settings)
 
 
 async def close_client(client: object) -> None:
@@ -127,6 +144,7 @@ def api_error(exc: ValueError | LookupError | OSError) -> HTTPException:
 def create_app(
     sessions: async_sessionmaker[AsyncSession] | None = None,
     export_dir: Path | None = None,
+    client_factory: Callable[[LLMSettings], object] = OpenAICompatibleClient,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -146,6 +164,7 @@ def create_app(
 
     app = FastAPI(title="Dataset Builder", lifespan=lifespan)
     app.state.active_run_ids = set()
+    app.state.client_factory = client_factory
     project_logger = logging.getLogger("dataset_builder")
     project_logger.setLevel(logging.INFO)
     if not project_logger.handlers:
@@ -185,13 +204,33 @@ def create_app(
                 })
             return result
 
+    @app.get("/api/models")
+    async def list_models(factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)]) -> list[dict]:
+        async with factory() as session:
+            return await ModelConfigService(session).list_models()
+
+    @app.post("/api/models", status_code=201)
+    async def create_model(
+        payload: ModelConfigInput, factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)]
+    ) -> dict:
+        async with factory() as session:
+            try:
+                result = await ModelConfigService(session).create(payload)
+                await session.commit()
+                return result
+            except ValueError as exc:
+                raise api_error(exc) from exc
+
+    @app.get("/api/prompt-presets")
+    async def prompt_presets() -> dict[str, list[dict[str, str]]]:
+        return list_prompt_presets()
+
     @app.post("/api/projects/build", status_code=202)
     async def build_project(
         file: Annotated[UploadFile, File()],
         background_tasks: BackgroundTasks,
         request: Request,
         factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
-        client: Annotated[OpenAICompatibleClient, Depends(llm_client)],
         project_name: Annotated[str | None, Form()] = None,
         generator: Annotated[str, Form()] = "qa",
         splitter: Annotated[str, Form()] = "auto",
@@ -200,10 +239,14 @@ def create_app(
         parser_workers: Annotated[int, Form(ge=1, le=16)] = 1,
         content_field: Annotated[str | None, Form()] = None,
         content_columns: Annotated[str | None, Form()] = None,
+        model_id: Annotated[UUID | None, Form()] = None,
+        prompt_preset: Annotated[str, Form()] = "default",
+        custom_prompt: Annotated[str | None, Form()] = None,
     ) -> dict:
         filename = (file.filename or "").replace("\\", "/").split("/")[-1]
         if not filename or filename in {".", ".."}:
-            raise HTTPException(status_code=422, detail="A source filename is required")
+            raise HTTPException(status_code=422, detail="必须提供源文件名")
+        client = await selected_client(factory, model_id, request.app.state.client_factory)
         temporary = TemporaryDirectory(prefix="dataset-builder-upload-")
         try:
             path = Path(temporary.name) / filename
@@ -214,6 +257,7 @@ def create_app(
             summary = await BuildService(factory, client).prepare_build(
                 path, project_name or path.stem, generator, splitter, max_chars, overlap,
                 content_field or None, columns, entrypoint="web", parser_workers=parser_workers,
+                prompt_preset=prompt_preset, custom_prompt=custom_prompt, model_id=model_id,
             )
         except Exception as exc:
             temporary.cleanup()
@@ -233,7 +277,6 @@ def create_app(
         background_tasks: BackgroundTasks,
         request: Request,
         factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
-        client: Annotated[OpenAICompatibleClient, Depends(llm_client)],
     ) -> dict:
         async with factory() as session:
             run = await session.scalar(
@@ -241,14 +284,13 @@ def create_app(
                 .order_by(PipelineRunRow.started_at.desc(), PipelineRunRow.id.desc()).limit(1)
             )
             if run is None:
-                await close_client(client)
                 raise HTTPException(status_code=404, detail="项目没有构建记录")
             if run.id in request.app.state.active_run_ids:
-                await close_client(client)
                 raise HTTPException(status_code=409, detail="构建任务仍在执行")
             if run.status in ACTIVE_STATUSES and run.configuration.get("entrypoint") == "web" and not run.total_items:
-                await close_client(client)
                 raise HTTPException(status_code=422, detail="任务在切分完成前中断，请重新上传文件")
+            model_id = UUID(run.configuration["model_id"]) if run.configuration.get("model_id") else None
+            client = await selected_client(factory, model_id, request.app.state.client_factory)
             if run.configuration.get("llm") != BuildService(factory, client)._llm_signature():
                 await close_client(client)
                 raise HTTPException(status_code=422, detail="当前模型配置与原构建任务不一致")
@@ -306,8 +348,20 @@ def create_app(
     ) -> list[dict]:
         async with factory() as session:
             if await session.get(ProjectRow, project_id) is None:
-                raise HTTPException(status_code=404, detail="Project does not exist")
+                raise HTTPException(status_code=404, detail="项目不存在")
             return await ReviewService(session).list_samples(project_id, limit, offset)
+
+    @app.patch("/api/projects/{project_id}/samples/bulk")
+    async def bulk_samples(
+        project_id: UUID, payload: BulkPayload,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+    ) -> dict:
+        async with factory() as session:
+            if await session.get(ProjectRow, project_id) is None:
+                raise HTTPException(status_code=404, detail="项目不存在")
+            result = await ReviewService(session).bulk_action(project_id, payload.sample_ids, payload.action)
+            await session.commit()
+            return result
 
     @app.get("/api/samples/{sample_id}")
     async def get_sample(

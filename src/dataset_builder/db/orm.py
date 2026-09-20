@@ -20,6 +20,24 @@ class ProjectRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class ModelConfigRow(Base):
+    __tablename__ = "model_configs"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(255), unique=True)
+    base_url: Mapped[str] = mapped_column(Text)
+    api_key: Mapped[str | None] = mapped_column(Text)
+    model: Mapped[str] = mapped_column(String(255))
+    temperature: Mapped[float] = mapped_column(default=0.7)
+    max_tokens: Mapped[int] = mapped_column(Integer, default=1024)
+    timeout: Mapped[float] = mapped_column(default=60)
+    concurrency_limit: Mapped[int] = mapped_column(Integer, default=4)
+    max_retries: Mapped[int] = mapped_column(Integer, default=2)
+    json_mode: Mapped[bool] = mapped_column(Boolean, default=False)
+    thinking: Mapped[bool | None] = mapped_column(Boolean)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class SourceDocumentRow(Base):
     __tablename__ = "source_documents"
 
