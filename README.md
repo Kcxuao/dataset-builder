@@ -1,6 +1,6 @@
 # Dataset Builder
 
-LLM 训练数据集构建工具，目前可通过 CLI 完成 TXT/Markdown 的构建、审核和导出流程。
+LLM 训练数据集构建工具，可通过 CLI 或 Web 工作台完成 TXT、Markdown、JSON、JSONL、CSV 的构建、审核和导出流程。
 
 ## PostgreSQL 配置
 
@@ -44,3 +44,13 @@ uv run dataset-builder build articles.csv --content-column title --content-colum
 ```
 
 JSON 根节点可以是单个对象或对象数组。JSONL 每个非空行是一个对象。CSV 将选中的列按 `列名: 值` 拼成文档内容。缺失字段或非字符串内容会报错；每条结构化记录的行号或数组索引会保留在来源元数据中。
+
+## Web 工作台与 API
+
+完成数据库迁移和 LLM 配置后启动服务：
+
+```bash
+uv run uvicorn dataset_builder.api:app --host 127.0.0.1 --port 8000
+```
+
+打开 `http://127.0.0.1:8000/` 导入文件、预览和编辑消息、审核样本并下载导出文件。API 文档位于 `/docs`。文件导入会等待当前构建完成后返回结果；生成时间取决于 Chunk 数量和 LLM 服务。导出文件默认保存在项目目录下的 `exports/`，该目录已被 Git 忽略。

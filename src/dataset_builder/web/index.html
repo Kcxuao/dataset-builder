@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dataset Builder · 工作台</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar"><div class="brand"><span class="brand-mark">D<span>·</span>B</span><span>Dataset Builder</span></div><span class="top-note">训练数据工作台 <span class="live-dot"></span> 本地运行</span></header>
+  <main class="shell">
+    <aside class="sidebar">
+      <div class="side-heading"><span>项目空间</span><span id="project-count" class="count">0</span></div>
+      <div id="projects" class="project-list"></div>
+      <button id="new-project" class="new-project" type="button"><span>＋</span> 新建数据集</button>
+      <div class="side-foot"><span class="step-number">01 / 03</span><strong>从原始内容到可用样本</strong><p>导入文档，审核生成结果，再导出训练数据。</p></div>
+    </aside>
+    <section class="workspace">
+      <div class="eyebrow">DATASET WORKSPACE <span class="line"></span> MVP</div>
+      <div class="workspace-head"><div><h1 id="project-title">选择一个项目</h1><p id="project-subtitle">从左侧选择项目，或导入文件创建新的数据集。</p></div><button id="retry-button" class="text-button hidden" type="button">↻ 重试失败 Chunk</button></div>
+      <div class="stage-rail" aria-label="处理流程"><div><b>01</b><span>导入与生成</span></div><i></i><div><b>02</b><span>校验与审核</span></div><i></i><div><b>03</b><span>导出数据</span></div></div>
+      <div id="notice" class="notice hidden" role="status"></div>
+      <section id="import-panel" class="panel import-panel"><div class="panel-kicker">START HERE / 创建项目</div><h2>导入原始数据</h2><p>支持 TXT、Markdown、JSON、JSONL 和 CSV。生成结果会进入审核队列。</p>
+        <form id="import-form"><div class="form-grid"><label class="file-field"><span>源文件</span><input name="file" type="file" accept=".txt,.md,.markdown,.json,.jsonl,.csv" required></label><label><span>项目名称</span><input name="project_name" type="text" placeholder="默认使用文件名"></label><label><span>生成方式</span><select name="generator"><option value="qa">问答 QA</option><option value="instruction">指令 Instruction</option></select></label><label><span>切分方式</span><select name="splitter"><option value="auto">自动</option><option value="paragraph">按段落</option><option value="fixed">固定长度</option><option value="markdown">Markdown 标题</option></select></label><label><span>最大字符数</span><input name="max_chars" type="number" min="1" value="1000"></label><label><span>重叠字符数</span><input name="overlap" type="number" min="0" value="0"></label><label><span>JSON / JSONL 内容字段</span><input name="content_field" type="text" placeholder="例如 article.body"></label><label><span>CSV 内容列</span><input name="content_columns" type="text" placeholder="例如 title,body"></label></div><button class="primary-button" type="submit">开始构建 <span>↗</span></button></form>
+      </section>
+      <section id="review-panel" class="review-layout hidden"><div class="panel sample-panel"><div class="section-head"><div><div class="panel-kicker">REVIEW QUEUE / 样本审核</div><h2>样本列表 <span id="sample-count" class="small-count"></span></h2></div><div class="pagination"><button id="prev-page" type="button">←</button><span id="page-label">1</span><button id="next-page" type="button">→</button></div></div><div id="samples" class="sample-list"></div></div><div class="panel detail-panel"><div class="section-head"><div><div class="panel-kicker">SAMPLE DETAIL / 样本详情</div><h2 id="detail-title">选择样本</h2></div><span id="detail-status" class="status-pill"></span></div><div id="detail-body" class="detail-body empty-detail">选择左侧样本查看消息、来源与校验结果。</div></div></section>
+      <section id="export-panel" class="panel export-panel hidden"><div><div class="panel-kicker">FINAL STEP / 导出</div><h2>导出已审核样本</h2><p>只包含校验通过、人工审核通过且未删除的样本。</p></div><form id="export-form"><label><span>训练格式</span><select name="format"><option value="sharegpt">ShareGPT</option><option value="alpaca">Alpaca</option></select></label><label><span>文件类型</span><select name="file_type"><option value="jsonl">JSONL</option><option value="json">JSON</option></select></label><button class="primary-button" type="submit">生成导出文件 ↗</button></form><a id="download-link" class="download-link hidden" href="#">下载最近生成的文件 ↓</a></section>
+    </section>
+  </main>
+</body>
+</html>

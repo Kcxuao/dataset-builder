@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-已通过 CLI 打通 TXT、Markdown、JSON、JSONL、CSV 构建、生成、清洗、校验、人工审核与 Alpaca/ShareGPT JSON/JSONL 导出流程。
+已通过 CLI 和 Web API/页面打通 TXT、Markdown、JSON、JSONL、CSV 构建、生成、清洗、校验、人工审核与 Alpaca/ShareGPT JSON/JSONL 导出流程。
 
 ## 已完成决策
 
@@ -19,7 +19,7 @@
 
 ## 当前未完成
 
-- 尚未实现 API 和 Web 页面。
+- MVP 核心流程已实现；待进行真实 LLM 服务与浏览器人工验收。
 
 ## 已完成
 
@@ -56,10 +56,13 @@
 - 扩展 CLI 构建选项与来源元数据，保留结构化记录的数组索引或文件行号；字段缺失和不适合的内容类型给出明确错误。
 - Fake LLM 与真实 PostgreSQL 测试覆盖三种结构化文件从导入到样本预览的流程。
 - 本阶段 `uv run ruff check .` 通过；完整测试套件连接本地 PostgreSQL 后 61 个测试通过。
+- 增加 FastAPI Web API 与静态工作台，支持文件上传构建、项目与样本查看、编辑、审核、软删除、失败 Chunk 重试及导出下载；API 复用现有应用服务。
+- 新增 Fake LLM 与 PostgreSQL API 往返集成测试，覆盖上传、审核、编辑、导出、下载和静态页面；测试数据通过外层事务回滚。
+- 本阶段 `uv run ruff check .` 通过；完整测试套件连接本地 PostgreSQL 后 62 个测试通过；wheel 构建及静态资源打包检查通过。
 
 ## 下一步任务
 
-1. 增加 Web API 与页面，复用现有应用服务。
+1. 使用实际兼容 LLM 服务和浏览器手动验收完整流程，修复验收中发现的问题。
 
 ## 进度维护规则
 
