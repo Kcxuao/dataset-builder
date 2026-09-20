@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-已完成工程骨架、领域模型、数据库基础设施、TXT/Markdown 解析与基础切分，以及 OpenAI Compatible Client 和 QA Generator；尚未打通完整数据处理流程。
+已完成工程骨架、领域模型、数据库基础设施、TXT/Markdown 解析与基础切分、QA/Instruction 生成、基础清洗与校验；尚未打通完整数据处理流程。
 
 ## 已完成决策
 
@@ -19,7 +19,7 @@
 
 ## 当前未完成
 
-- 尚未实现 JSON、JSONL、CSV Parser、Instruction Generator、Cleaner、Validator、Formatter 和 Exporter。
+- 尚未实现 JSON、JSONL、CSV Parser、Formatter 和 Exporter。
 - CLI 只有可运行的占位入口，尚无业务命令。
 - 尚未实现 API 和 Web 页面。
 
@@ -41,11 +41,15 @@
 - 实现 OpenAI Compatible 异步客户端、独立 LLM 接口与 QA Generator；支持模型配置、并发限制、超时、有限重试和 Pydantic 响应校验。
 - 处理 Markdown 代码块包裹的 JSON、非法 JSON、缺失字段和空响应；使用 Fake Client/SDK 测试，不调用真实收费服务。
 - 本阶段 `uv run ruff check .` 通过；完整测试套件连接本地 PostgreSQL 后 27 个测试通过；SDK 客户端初始化与关闭验证通过。
+- 实现 Instruction Generator，独立于 QA 策略生成 instruction/response 样本。
+- 实现基础 Cleaner：文本首尾和 NFC 规范化、空内容与长度检查、项目范围内的内容哈希精确去重；被拒样本与问题记录均保留。
+- 实现统一 IR 的消息结构、角色、顺序和目标格式兼容性校验；Alpaca 多轮或带 system 消息会生成明确问题。
+- 本阶段 `uv run ruff check .` 通过；完整测试套件连接本地 PostgreSQL 后 41 个测试通过。
 
 ## 下一步任务
 
-1. 实现 Instruction Generator、基础 Cleaner、Validator 和精确去重。
-2. 实现 Alpaca、ShareGPT Formatter 与 JSON、JSONL Exporter，再打通 CLI 流程。
+1. 实现 Alpaca、ShareGPT Formatter 与 JSON、JSONL Exporter。
+2. 打通 CLI 流程与样本审核能力。
 3. 后续补充 JSON、JSONL、CSV 字段映射导入。
 
 ## 进度维护规则
