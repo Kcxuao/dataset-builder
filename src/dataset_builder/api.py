@@ -1,5 +1,6 @@
 """HTTP entry point for the shared dataset building services."""
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -7,21 +8,35 @@ from tempfile import TemporaryDirectory
 from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from dataset_builder.application.build import BuildService
 from dataset_builder.application.review import ReviewService
 from dataset_builder.config import LLMSettings, Settings
-from dataset_builder.db.orm import ExportRecordRow, PipelineRunRow, ProjectRow, TrainingSampleRow
+from dataset_builder.db.orm import (
+    ChunkRow,
+    ExportRecordRow,
+    PipelineRunRow,
+    ProjectRow,
+    SourceDocumentRow,
+    TrainingSampleRow,
+)
 from dataset_builder.db.session import create_engine, create_session_factory
 from dataset_builder.exporters.service import SampleExportService
 from dataset_builder.llm import OpenAICompatibleClient
-from dataset_builder.models import ExportFileType, ExportFormat, Message, ReviewStatus
+from dataset_builder.models import ExportFileType, ExportFormat, Message, PipelineStatus, ReviewStatus, utc_now
+
+logger = logging.getLogger(__name__)
+ACTIVE_STATUSES = {
+    PipelineStatus.CREATED, PipelineStatus.IMPORTING, PipelineStatus.PARSING,
+    PipelineStatus.SPLITTING, PipelineStatus.GENERATING, PipelineStatus.CLEANING,
+    PipelineStatus.VALIDATING,
+}
 
 
 class MessagesPayload(BaseModel):
@@ -45,12 +60,56 @@ def sessions_for(request: Request) -> async_sessionmaker[AsyncSession]:
     return request.app.state.sessions
 
 
-async def llm_client() -> AsyncIterator[OpenAICompatibleClient]:
-    client = OpenAICompatibleClient(LLMSettings())
+def llm_client() -> OpenAICompatibleClient:
     try:
-        yield client
+        settings = LLMSettings()
+    except ValidationError as exc:
+        fields = ", ".join(sorted({"LLM_" + str(error["loc"][0]).upper() for error in exc.errors()}))
+        raise HTTPException(status_code=503, detail=f"模型配置缺失或无效：{fields}") from exc
+    return OpenAICompatibleClient(settings)
+
+
+async def close_client(client: object) -> None:
+    close = getattr(client, "aclose", None)
+    if close is not None:
+        await close()
+
+
+async def run_build_in_background(
+    factory: async_sessionmaker[AsyncSession], client: object, run_id: UUID,
+    path: Path, temporary: TemporaryDirectory[str], app: FastAPI,
+) -> None:
+    try:
+        await BuildService(factory, client).execute_build(run_id, path)
+    except Exception:
+        logger.error("后台构建失败：运行编号 %s，详情已写入任务记录", run_id)
     finally:
-        await client.aclose()
+        try:
+            await close_client(client)
+        finally:
+            temporary.cleanup()
+            app.state.active_run_ids.discard(run_id)
+
+
+async def run_retry_in_background(
+    factory: async_sessionmaker[AsyncSession], client: object, project_id: UUID, run_id: UUID, app: FastAPI,
+) -> None:
+    try:
+        await BuildService(factory, client).retry_failed(project_id)
+    except Exception as exc:
+        async with factory() as session:
+            run = await session.get(PipelineRunRow, run_id)
+            if run is not None:
+                run.status = PipelineStatus.FAILED
+                run.error_message = f"{type(exc).__name__}: {exc}"[:500]
+                run.finished_at = utc_now()
+                await session.commit()
+        logger.error("后台重试失败：运行编号 %s，详情已写入任务记录", run_id)
+    finally:
+        try:
+            await close_client(client)
+        finally:
+            app.state.active_run_ids.discard(run_id)
 
 
 def export_dir_for(request: Request) -> Path:
@@ -86,6 +145,14 @@ def create_app(
             yield
 
     app = FastAPI(title="Dataset Builder", lifespan=lifespan)
+    app.state.active_run_ids = set()
+    project_logger = logging.getLogger("dataset_builder")
+    project_logger.setLevel(logging.INFO)
+    if not project_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+        project_logger.addHandler(handler)
+    project_logger.propagate = False
     app.state.export_dir = export_dir or Path("exports")
     if sessions is not None:
         app.state.sessions = sessions
@@ -114,12 +181,15 @@ def create_app(
                     "id": str(project.id), "name": project.name, "created_at": project.created_at,
                     "sample_count": count, "run_status": run.status if run else None,
                     "failed_chunks": run.failed_items if run else 0,
+                    "run_id": str(run.id) if run else None,
                 })
             return result
 
-    @app.post("/api/projects/build")
+    @app.post("/api/projects/build", status_code=202)
     async def build_project(
         file: Annotated[UploadFile, File()],
+        background_tasks: BackgroundTasks,
+        request: Request,
         factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
         client: Annotated[OpenAICompatibleClient, Depends(llm_client)],
         project_name: Annotated[str | None, Form()] = None,
@@ -133,32 +203,98 @@ def create_app(
         filename = (file.filename or "").replace("\\", "/").split("/")[-1]
         if not filename or filename in {".", ".."}:
             raise HTTPException(status_code=422, detail="A source filename is required")
-        with TemporaryDirectory(prefix="dataset-builder-upload-") as directory:
-            path = Path(directory) / filename
+        temporary = TemporaryDirectory(prefix="dataset-builder-upload-")
+        try:
+            path = Path(temporary.name) / filename
             with path.open("wb") as destination:
                 while data := await file.read(1024 * 1024):
                     destination.write(data)
-            try:
-                columns = tuple(column.strip() for column in (content_columns or "").split(",") if column.strip())
-                summary = await BuildService(factory, client).build(
-                    path, project_name or path.stem, generator, splitter, max_chars, overlap,
-                    content_field or None, columns,
-                )
-            except (ValueError, LookupError, OSError) as exc:
+            columns = tuple(column.strip() for column in (content_columns or "").split(",") if column.strip())
+            summary = await BuildService(factory, client).prepare_build(
+                path, project_name or path.stem, generator, splitter, max_chars, overlap,
+                content_field or None, columns, "web",
+            )
+        except Exception as exc:
+            temporary.cleanup()
+            await close_client(client)
+            if isinstance(exc, (ValueError, LookupError, OSError)):
                 raise api_error(exc) from exc
-        return summary.__dict__
+            raise
+        request.app.state.active_run_ids.add(summary.run_id)
+        background_tasks.add_task(
+            run_build_in_background, factory, client, summary.run_id, path, temporary, request.app
+        )
+        return {"project_id": summary.project_id, "run_id": summary.run_id}
 
-    @app.post("/api/projects/{project_id}/retry")
+    @app.post("/api/projects/{project_id}/retry", status_code=202)
     async def retry_project(
         project_id: UUID,
+        background_tasks: BackgroundTasks,
+        request: Request,
         factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
         client: Annotated[OpenAICompatibleClient, Depends(llm_client)],
     ) -> dict:
-        try:
-            summary = await BuildService(factory, client).retry_failed(project_id)
-        except (ValueError, LookupError, OSError) as exc:
-            raise api_error(exc) from exc
-        return summary.__dict__
+        async with factory() as session:
+            run = await session.scalar(
+                select(PipelineRunRow).where(PipelineRunRow.project_id == project_id)
+                .order_by(PipelineRunRow.started_at.desc(), PipelineRunRow.id.desc()).limit(1)
+            )
+            if run is None:
+                await close_client(client)
+                raise HTTPException(status_code=404, detail="项目没有构建记录")
+            if run.id in request.app.state.active_run_ids:
+                await close_client(client)
+                raise HTTPException(status_code=409, detail="构建任务仍在执行")
+            if run.status in ACTIVE_STATUSES and run.configuration.get("entrypoint") == "web" and not run.total_items:
+                await close_client(client)
+                raise HTTPException(status_code=422, detail="任务在切分完成前中断，请重新上传文件")
+            if run.configuration.get("llm") != BuildService(factory, client)._llm_signature():
+                await close_client(client)
+                raise HTTPException(status_code=422, detail="当前模型配置与原构建任务不一致")
+            run_id = run.id
+            run.status = PipelineStatus.GENERATING
+            run.current_stage = PipelineStatus.GENERATING
+            run.finished_at = None
+            run.error_message = None
+            await session.commit()
+        request.app.state.active_run_ids.add(run_id)
+        background_tasks.add_task(run_retry_in_background, factory, client, project_id, run_id, request.app)
+        return {"project_id": project_id, "run_id": run_id}
+
+    @app.get("/api/runs/{run_id}")
+    async def get_run(
+        run_id: UUID, request: Request,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+    ) -> dict:
+        async with factory() as session:
+            run = await session.get(PipelineRunRow, run_id)
+            if run is None:
+                raise HTTPException(status_code=404, detail="构建任务不存在")
+            interrupted = (
+                run.status in ACTIVE_STATUSES and run.configuration.get("entrypoint") == "web"
+                and run.id not in request.app.state.active_run_ids
+            )
+            failed = (await session.scalars(
+                select(ChunkRow).join(SourceDocumentRow)
+                .where(SourceDocumentRow.project_id == run.project_id, ChunkRow.generation_status == "failed")
+                .order_by(ChunkRow.created_at, ChunkRow.id).limit(20)
+            )).all()
+            sample_count = await session.scalar(
+                select(func.count(TrainingSampleRow.id)).where(TrainingSampleRow.project_id == run.project_id)
+            )
+            return {
+                "id": str(run.id), "project_id": str(run.project_id),
+                "status": "interrupted" if interrupted else run.status,
+                "current_stage": run.current_stage,
+                "total_items": run.total_items, "completed_items": run.completed_items,
+                "failed_items": run.failed_items, "sample_count": sample_count,
+                "error_message": run.error_message,
+                "started_at": run.started_at, "finished_at": run.finished_at,
+                "failed_chunks": [
+                    {"id": str(chunk.id), "error": chunk.metadata_.get("generation_error", "生成失败")}
+                    for chunk in failed
+                ],
+            }
 
     @app.get("/api/projects/{project_id}/samples")
     async def list_samples(

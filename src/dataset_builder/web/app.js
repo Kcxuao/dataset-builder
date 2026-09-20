@@ -1,5 +1,7 @@
 const $ = (id) => document.getElementById(id);
-const state = { projects: [], projectId: null, samples: [], sampleId: null, offset: 0, limit: 20 };
+const state = { projects: [], projectId: null, runId: null, pollTimer: null, lastRunStatus: null, samples: [], sampleId: null, offset: 0, limit: 20 };
+const stageNames = { created: '任务已创建', importing: '正在导入', parsing: '正在解析', splitting: '正在切分', generating: '正在生成样本', cleaning: '正在清洗', validating: '正在校验', ready_for_review: '等待人工审核', completed: '处理完成', failed: '处理失败', interrupted: '任务已中断' };
+const activeStatuses = new Set(['created', 'importing', 'parsing', 'splitting', 'generating', 'cleaning', 'validating']);
 
 async function api(path, options = {}) {
   const response = await fetch(path, options);
@@ -41,9 +43,10 @@ async function loadProjects(preferredId = state.projectId) {
   else showImport();
 }
 function showImport() {
+  clearTimeout(state.pollTimer); state.runId = null;
   state.projectId = null; state.sampleId = null; $('project-title').textContent = '创建你的第一个数据集';
   $('project-subtitle').textContent = '导入文档，生成可审核的训练样本。';
-  $('import-panel').classList.remove('hidden'); $('review-panel').classList.add('hidden'); $('export-panel').classList.add('hidden'); $('retry-button').classList.add('hidden');
+  $('import-panel').classList.remove('hidden'); $('review-panel').classList.add('hidden'); $('export-panel').classList.add('hidden'); $('retry-button').classList.add('hidden'); $('progress-panel').classList.add('hidden');
   for (const button of document.querySelectorAll('.project-item')) button.classList.remove('active');
 }
 async function selectProject(id, refreshProjects = true) {
@@ -55,6 +58,35 @@ async function selectProject(id, refreshProjects = true) {
   $('retry-button').classList.toggle('hidden', !project.failed_chunks);
   if (refreshProjects) for (const button of document.querySelectorAll('.project-item')) button.classList.toggle('active', button.dataset.projectId === id);
   await loadSamples();
+  watchRun(project.run_id);
+}
+function watchRun(runId) {
+  clearTimeout(state.pollTimer); state.runId = runId; state.lastRunStatus = null;
+  $('progress-panel').classList.toggle('hidden', !runId);
+  if (runId) run(() => refreshRun(runId));
+}
+async function refreshRun(runId) {
+  const progress = await api(`/api/runs/${runId}`);
+  if (state.runId !== runId) return;
+  const processed = progress.completed_items + progress.failed_items;
+  const total = progress.total_items;
+  const finished = !activeStatuses.has(progress.status);
+  const percentage = total ? Math.round(processed / total * 100) : (finished ? 100 : 0);
+  $('progress-stage').textContent = stageNames[progress.status] || '处理中';
+  $('progress-count').textContent = total ? `${processed} / ${total}` : '等待切分结果';
+  $('progress-fill').style.width = `${Math.min(100, percentage)}%`;
+  $('progress-detail').textContent = `已成功 ${progress.completed_items} 个内容块，失败 ${progress.failed_items} 个，生成 ${progress.sample_count} 条样本。${progress.status === 'generating' ? `完成 ${percentage}%` : ''}`;
+  if (progress.status === 'interrupted') $('progress-detail').textContent = total ? '服务曾中断此任务，可以重试剩余内容块。' : '任务在切分完成前中断，请重新上传源文件。';
+  $('retry-button').classList.toggle('hidden', !(progress.failed_items > 0 || (progress.status === 'interrupted' && total > 0)));
+  const errors = $('progress-errors'); errors.replaceChildren();
+  if (progress.error_message) errors.append(node('div', 'progress-error', progress.error_message));
+  for (const chunk of progress.failed_chunks) errors.append(node('div', 'progress-error', `内容块 ${chunk.id.slice(0, 8)}：${chunk.error}`));
+  if (finished && state.lastRunStatus && activeStatuses.has(state.lastRunStatus)) {
+    notice(progress.status === 'failed' ? '构建失败，请查看任务错误详情。' : '构建结束，样本已进入审核队列。', progress.status === 'failed');
+    await loadSamples();
+  }
+  state.lastRunStatus = progress.status;
+  if (!finished) state.pollTimer = setTimeout(() => run(() => refreshRun(runId)), 1200);
 }
 async function loadSamples(selectId = null) {
   if (!state.projectId) return;
@@ -110,11 +142,11 @@ async function renderDetail(id) {
 }
 $('new-project').addEventListener('click', showImport);
 $('import-form').addEventListener('submit', (event) => { event.preventDefault(); run(async () => {
-  const button = event.target.querySelector('button[type=submit]'); button.disabled = true; button.textContent = '正在构建…'; notice('文件已上传，正在解析和生成样本；请保持页面打开。');
-  try { const result = await api('/api/projects/build', { method: 'POST', body: new FormData(event.target) }); notice(`构建完成：${result.samples} 条样本，${result.failed_chunks} 个 Chunk 失败。`); await loadProjects(result.project_id); }
+  const button = event.target.querySelector('button[type=submit]'); button.disabled = true; button.textContent = '正在上传…'; notice('正在上传文件并创建构建任务…');
+  try { const result = await api('/api/projects/build', { method: 'POST', body: new FormData(event.target) }); notice('构建任务已创建，进度会自动更新。'); await loadProjects(result.project_id); }
   finally { button.disabled = false; button.textContent = '开始构建 ↗'; }
 }); });
-$('retry-button').addEventListener('click', () => run(async () => { notice('正在重试失败 Chunk…'); const result = await api(`/api/projects/${state.projectId}/retry`, { method: 'POST' }); notice(`重试完成：新增 ${result.samples} 条样本，仍有 ${result.failed_chunks} 个 Chunk 失败。`); await loadProjects(state.projectId); }));
+$('retry-button').addEventListener('click', () => run(async () => { const result = await api(`/api/projects/${state.projectId}/retry`, { method: 'POST' }); notice('失败内容块已开始重试，进度会自动更新。'); watchRun(result.run_id); }));
 $('prev-page').addEventListener('click', () => run(async () => { state.offset = Math.max(0, state.offset - state.limit); await loadSamples(); }));
 $('next-page').addEventListener('click', () => run(async () => { state.offset += state.limit; await loadSamples(); }));
 $('export-form').addEventListener('submit', (event) => { event.preventDefault(); run(async () => {

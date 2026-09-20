@@ -1,5 +1,7 @@
 """Persist import, split, generation, cleaning, and validation progress."""
 
+import asyncio
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -22,6 +24,8 @@ from dataset_builder.models import Chunk, PipelineStatus, TrainingSample, Valida
 from dataset_builder.parsers import CSVParser, ImportSource, JSONLParser, JSONParser, MarkdownParser, TextParser
 from dataset_builder.splitters import FixedLengthSplitter, MarkdownHeadingSplitter, ParagraphSplitter
 from dataset_builder.validators import SampleValidator
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,25 @@ class BuildService:
         overlap: int = 0,
         content_field: str | None = None,
         content_columns: tuple[str, ...] = (),
+        entrypoint: str = "cli",
+    ) -> BuildSummary:
+        prepared = await self.prepare_build(
+            path, project_name, generator_mode, splitter_mode, max_chunk_length, overlap,
+            content_field, content_columns, entrypoint,
+        )
+        return await self.execute_build(prepared.run_id, path)
+
+    async def prepare_build(
+        self,
+        path: Path,
+        project_name: str,
+        generator_mode: str = "qa",
+        splitter_mode: str = "auto",
+        max_chunk_length: int = 1000,
+        overlap: int = 0,
+        content_field: str | None = None,
+        content_columns: tuple[str, ...] = (),
+        entrypoint: str = "cli",
     ) -> BuildSummary:
         if generator_mode not in {"qa", "instruction"}:
             raise ValueError("generator_mode must be qa or instruction")
@@ -69,6 +92,8 @@ class BuildService:
             raise ValueError("--content-field is only supported for JSON and JSONL")
         if content_columns and extension != ".csv":
             raise ValueError("--content-column is only supported for CSV")
+        if max_chunk_length < 1 or overlap < 0 or overlap >= max_chunk_length:
+            raise ValueError("max_chunk_length must be positive and overlap must be smaller")
 
         project_id, run_id = uuid4(), uuid4()
         async with self.sessions() as session:
@@ -80,16 +105,27 @@ class BuildService:
                     "generator": generator_mode, "splitter": splitter_mode,
                     "max_chunk_length": max_chunk_length, "overlap": overlap,
                     "content_field": content_field, "content_columns": list(content_columns),
+                    "entrypoint": entrypoint,
                     "llm": self._llm_signature(),
                 },
                 started_at=utc_now(),
             ))
             await session.commit()
+        logger.info("已创建构建任务：运行编号 %s，项目编号 %s，文件 %s", run_id, project_id, path.name)
+        return BuildSummary(project_id, run_id, 0, 0, 0, 0)
 
+    async def execute_build(self, run_id: UUID, path: Path) -> BuildSummary:
+        async with self.sessions() as session:
+            run = await session.get(PipelineRunRow, run_id)
+            if run is None:
+                raise LookupError(f"Pipeline run {run_id} does not exist")
+            project_id = run.project_id
+            configuration = run.configuration
         try:
             return await self._process(
-                project_id, run_id, path, generator_mode, splitter_mode,
-                max_chunk_length, overlap, content_field, content_columns,
+                project_id, run_id, path, configuration["generator"], configuration["splitter"],
+                configuration["max_chunk_length"], configuration["overlap"],
+                configuration["content_field"], tuple(configuration["content_columns"]),
             )
         except Exception as exc:
             async with self.sessions() as session:
@@ -98,6 +134,7 @@ class BuildService:
                 run.error_message = f"{type(exc).__name__}: {exc}"[:500]
                 run.finished_at = utc_now()
                 await session.commit()
+            logger.error("构建任务失败：运行编号 %s，项目编号 %s，请查看页面中的错误详情", run_id, project_id)
             raise
 
     async def _process(
@@ -125,7 +162,8 @@ class BuildService:
             run.status = PipelineStatus.PARSING
             run.current_stage = PipelineStatus.PARSING
             await session.commit()
-        documents = parser.parse(ImportSource(
+        logger.info("开始解析文件：运行编号 %s，文件 %s", run_id, path.name)
+        documents = await asyncio.to_thread(parser.parse, ImportSource(
             path=path, project_id=project_id,
             content_field=content_field, content_columns=content_columns,
         ))
@@ -138,9 +176,15 @@ class BuildService:
             "paragraph": ParagraphSplitter,
             "markdown": MarkdownHeadingSplitter,
         }[mode](max_length=max_chunk_length, overlap=overlap)
+        async with self.sessions() as session:
+            run = await session.get(PipelineRunRow, run_id)
+            run.status = PipelineStatus.SPLITTING
+            run.current_stage = PipelineStatus.SPLITTING
+            await session.commit()
+        logger.info("开始切分内容：运行编号 %s，文档 %d 个", run_id, len(documents))
         chunks: list[Chunk] = []
         for document in documents:
-            chunks.extend(splitter.split(document))
+            chunks.extend(await asyncio.to_thread(splitter.split, document))
         async with self.sessions() as session:
             run = await session.get(PipelineRunRow, run_id)
             run.status = PipelineStatus.SPLITTING
@@ -159,7 +203,10 @@ class BuildService:
                     content=chunk.content, content_hash=chunk.content_hash,
                     metadata_=chunk.metadata, generation_status="pending",
                 ))
+            run.status = PipelineStatus.GENERATING
+            run.current_stage = PipelineStatus.GENERATING
             await session.commit()
+        logger.info("开始生成样本：运行编号 %s，文档 %d 个，内容块 %d 个", run_id, len(documents), len(chunks))
 
         sample_count, failed_count = await self._generate_chunks(project_id, run_id, chunks, generator_mode, set())
         return BuildSummary(project_id, run_id, len(documents), len(chunks), sample_count, failed_count)
@@ -203,6 +250,7 @@ class BuildService:
             run.finished_at = None
             await session.commit()
             run_id = run.id
+        logger.info("开始重试失败内容块：运行编号 %s，待处理 %d 个", run_id, len(chunks))
         sample_count, failed_count = await self._generate_chunks(
             project_id, run_id, chunks, mode, {(project_id, value) for value in hashes}
         )
@@ -231,6 +279,9 @@ class BuildService:
                     row.metadata_ = {**row.metadata_, "generation_error": f"{type(exc).__name__}: {exc}"[:500]}
                     run.failed_items += 1
                     await session.commit()
+                logger.warning(
+                    "内容块生成失败：运行编号 %s，内容块编号 %s，累计失败 %d 个", run_id, chunk.id, failed_count
+                )
                 continue
 
             cleaned = self.cleaner.clean(generated, seen)
@@ -252,6 +303,11 @@ class BuildService:
                 run.current_stage = PipelineStatus.GENERATING
                 run.completed_items += 1
                 await session.commit()
+            logger.info(
+                "内容块处理完成：运行编号 %s，内容块编号 %s，进度 %d/%d，本块样本 %d 条",
+                run_id, chunk.id, run.completed_items + run.failed_items, run.total_items,
+                len(cleaned.accepted) + len(cleaned.rejected),
+            )
             seen.update(new_hashes)
             sample_count += len(cleaned.accepted) + len(cleaned.rejected)
 
@@ -261,6 +317,10 @@ class BuildService:
             run.current_stage = PipelineStatus.READY_FOR_REVIEW
             run.finished_at = utc_now()
             await session.commit()
+        logger.info(
+            "构建任务结束：运行编号 %s，成功内容块 %d 个，失败内容块 %d 个，等待人工审核",
+            run_id, run.completed_items, failed_count,
+        )
         return sample_count, failed_count
 
     def _llm_signature(self) -> dict[str, object]:

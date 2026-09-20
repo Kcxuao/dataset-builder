@@ -50,7 +50,7 @@ JSON 根节点可以是单个对象或对象数组。JSONL 每个非空行是一
 完成数据库迁移和 LLM 配置后启动服务：
 
 ```bash
-uv run uvicorn dataset_builder.api:app --host 127.0.0.1 --port 8000
+uv run uvicorn dataset_builder.api:app --host 127.0.0.1 --port 8000 --no-access-log --log-level warning
 ```
 
-打开 `http://127.0.0.1:8000/` 导入文件、预览和编辑消息、审核样本并下载导出文件。API 文档位于 `/docs`。文件导入会等待当前构建完成后返回结果；生成时间取决于 Chunk 数量和 LLM 服务。导出文件默认保存在项目目录下的 `exports/`，该目录已被 Git 忽略。
+打开 `http://127.0.0.1:8000/` 导入文件、预览和编辑消息、审核样本并下载导出文件。API 文档位于 `/docs`。上传完成后会立即返回项目和运行 ID；页面每隔约一秒查询运行状态，显示处理阶段、内容块数量和失败详情。也可调用 `GET /api/runs/{run_id}` 查询进度。构建在 Web 服务进程内执行；服务中断后，已切分的任务可以重试剩余内容块，切分前中断则需要重新上传。导出文件默认保存在项目目录下的 `exports/`，该目录已被 Git 忽略。
