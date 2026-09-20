@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-已完成工程骨架、领域模型、数据库基础设施、TXT/Markdown 解析与基础切分、QA/Instruction 生成、基础清洗与校验，以及 Alpaca/ShareGPT JSON/JSONL 导出；尚未打通完整数据处理流程。
+已通过 CLI 打通 TXT/Markdown 构建、生成、清洗、校验、人工审核与 Alpaca/ShareGPT JSON/JSONL 导出流程。
 
 ## 已完成决策
 
@@ -20,7 +20,6 @@
 ## 当前未完成
 
 - 尚未实现 JSON、JSONL、CSV Parser。
-- CLI 只有可运行的占位入口，尚无业务命令。
 - 尚未实现 API 和 Web 页面。
 
 ## 已完成
@@ -49,12 +48,16 @@
 - 实现 JSON、JSONL 逐条写入与临时文件原子替换；PostgreSQL 导出服务分批读取，仅选择已审核、已校验且未删除的样本，并记录导出状态与数量。
 - 使用真实 PostgreSQL 验证默认筛选和格式不兼容时旧文件保留，测试数据已回滚。
 - 本阶段 `uv run ruff check .` 通过；完整测试套件连接本地 PostgreSQL 后 48 个测试通过。
+- 实现共用应用服务与 CLI 命令：构建、失败 Chunk 重试、样本查看/编辑、审核、软删除/恢复和导出。
+- 构建任务按 Chunk 保存进度；单 Chunk 调用失败时记录错误并继续，重试时跳过成功 Chunk 且校验 LLM 配置一致。
+- 编辑后重新规范化、计算哈希和校验，并恢复待审核状态；导出仍只包含审核及校验通过的非删除样本。
+- Fake LLM 与真实 PostgreSQL 的往返测试覆盖构建、失败继续、重试、审核、编辑和导出。
+- 本阶段 `uv run ruff check .` 通过；完整测试套件连接本地 PostgreSQL 后 49 个测试通过。
 
 ## 下一步任务
 
-1. 打通 CLI 流程与样本审核能力。
-2. 补充 JSON、JSONL、CSV 字段映射导入。
-3. 后续增加 Web API 与页面。
+1. 补充 JSON、JSONL、CSV 字段映射导入。
+2. 增加 Web API 与页面，复用现有应用服务。
 
 ## 进度维护规则
 

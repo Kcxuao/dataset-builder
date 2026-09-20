@@ -1,2 +1,4 @@
 def main() -> None:
-    print("Dataset Builder CLI scaffold; commands are not implemented yet.")
+    from dataset_builder.cli import main as cli_main
+
+    cli_main()
