@@ -3,6 +3,7 @@
 import asyncio
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -33,6 +34,23 @@ class FakeLLMClient:
 
 class MappingFakeLLMClient:
     async def generate(self, messages: list[Message], response_model: type[QAResponse]) -> QAResponse:
+        content = messages[-1].content
+        return response_model.model_validate({"pairs": [{"question": f"What is {content}?", "answer": content}]})
+
+
+class ConcurrentFakeLLMClient:
+    def __init__(self) -> None:
+        self.settings = SimpleNamespace(
+            base_url="fake", model="fake", temperature=0, max_tokens=100, concurrency_limit=3,
+        )
+        self.active = 0
+        self.peak = 0
+
+    async def generate(self, messages: list[Message], response_model: type[QAResponse]) -> QAResponse:
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        await asyncio.sleep(0.02)
+        self.active -= 1
         content = messages[-1].content
         return response_model.model_validate({"pairs": [{"question": f"What is {content}?", "answer": content}]})
 
@@ -154,7 +172,7 @@ async def test_structured_file_build_flow(
             )
             try:
                 summary = await BuildService(sessions, MappingFakeLLMClient()).build(
-                    source, "Mapped import", **mapping
+                    source, "Mapped import", parser_workers=4, **mapping
                 )
                 assert summary.document_count == 2
                 assert summary.chunk_count == 2
@@ -167,6 +185,38 @@ async def test_structured_file_build_flow(
                         {"body: One", "body: Two"} if filename.endswith(".csv") else {"One", "Two"}
                     )
                     assert len({item["metadata"]["record_index"] for item in listed}) == 2
+            finally:
+                await transaction.rollback()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_build_generates_chunks_concurrently(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("Set TEST_DATABASE_URL to an isolated PostgreSQL database")
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    await asyncio.to_thread(command.upgrade, Config("alembic.ini"), "head")
+    source = tmp_path / "source.txt"
+    source.write_text("abcdefghijkl", encoding="utf-8")
+    engine = create_engine(database_url)
+    try:
+        async with engine.connect() as connection:
+            transaction = await connection.begin()
+            sessions = async_sessionmaker(
+                bind=connection, class_=AsyncSession,
+                expire_on_commit=False, join_transaction_mode="create_savepoint",
+            )
+            try:
+                fake = ConcurrentFakeLLMClient()
+                summary = await BuildService(sessions, fake).build(
+                    source, "Concurrent build", splitter_mode="fixed", max_chunk_length=3,
+                )
+                assert fake.peak == 3
+                assert summary.chunk_count == 4
+                assert summary.sample_count == 4
+                assert summary.failed_chunk_count == 0
             finally:
                 await transaction.rollback()
     finally:

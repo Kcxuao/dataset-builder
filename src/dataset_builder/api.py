@@ -197,6 +197,7 @@ def create_app(
         splitter: Annotated[str, Form()] = "auto",
         max_chars: Annotated[int, Form(ge=1)] = 1000,
         overlap: Annotated[int, Form(ge=0)] = 0,
+        parser_workers: Annotated[int, Form(ge=1, le=16)] = 1,
         content_field: Annotated[str | None, Form()] = None,
         content_columns: Annotated[str | None, Form()] = None,
     ) -> dict:
@@ -212,7 +213,7 @@ def create_app(
             columns = tuple(column.strip() for column in (content_columns or "").split(",") if column.strip())
             summary = await BuildService(factory, client).prepare_build(
                 path, project_name or path.stem, generator, splitter, max_chars, overlap,
-                content_field or None, columns, "web",
+                content_field or None, columns, entrypoint="web", parser_workers=parser_workers,
             )
         except Exception as exc:
             temporary.cleanup()

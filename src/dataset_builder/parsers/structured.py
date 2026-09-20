@@ -2,9 +2,26 @@
 
 import csv
 import json
+from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
+from itertools import batched
 
 from dataset_builder.models import ParseStatus, SourceDocument
 from dataset_builder.parsers.text import ImportSource
+
+
+def _map_documents[T](
+    records: Iterable[T], transform: Callable[[T], SourceDocument], workers: int,
+) -> list[SourceDocument]:
+    if workers < 1:
+        raise ValueError("解析工作线程数必须大于零")
+    if workers == 1:
+        return [transform(record) for record in records]
+    documents: list[SourceDocument] = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for batch in batched(records, workers * 16):
+            documents.extend(pool.map(transform, batch))
+    return documents
 
 
 def _content_field(source: ImportSource) -> tuple[str, ...]:
@@ -48,10 +65,11 @@ class JSONParser:
         records = data if isinstance(data, list) else [data]
         if not isinstance(data, (dict, list)):
             raise ValueError("JSON root must be an object or an array of objects")
-        return [
-            _document(source, _mapped_text(record, parts, index), "json", index, len(raw))
-            for index, record in enumerate(records)
-        ]
+        def transform(item: tuple[int, object]) -> SourceDocument:
+            index, record = item
+            return _document(source, _mapped_text(record, parts, index), "json", index, len(raw))
+
+        return _map_documents(enumerate(records), transform, source.workers)
 
 
 class JSONLParser:
@@ -60,19 +78,17 @@ class JSONLParser:
             raise ValueError(f"Unsupported JSONL extension: {source.path.suffix}")
         parts = _content_field(source)
         file_size = source.path.stat().st_size
-        documents: list[SourceDocument] = []
+        def transform(item: tuple[int, str]) -> SourceDocument:
+            line_number, line = item
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"JSONL 第 {line_number} 行不是有效的 JSON") from exc
+            return _document(source, _mapped_text(record, parts, line_number), "jsonl", line_number, file_size)
+
         with source.path.open("r", encoding="utf-8-sig") as input_file:
-            for line_number, line in enumerate(input_file, start=1):
-                if not line.strip():
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"JSONL line {line_number} contains invalid JSON") from exc
-                documents.append(_document(
-                    source, _mapped_text(record, parts, line_number), "jsonl", line_number, file_size
-                ))
-        return documents
+            records = ((number, line) for number, line in enumerate(input_file, start=1) if line.strip())
+            return _map_documents(records, transform, source.workers)
 
 
 class CSVParser:
@@ -83,13 +99,14 @@ class CSVParser:
         if not columns or any(not column for column in columns):
             raise ValueError("CSV imports require one or more --content-column values")
         file_size = source.path.stat().st_size
-        documents: list[SourceDocument] = []
+        def transform(item: tuple[int, dict[str, str | None]]) -> SourceDocument:
+            row_number, row = item
+            content = "\n".join(f"{column}: {row[column] or ''}" for column in columns)
+            return _document(source, content, "csv", row_number, file_size)
+
         with source.path.open("r", encoding="utf-8-sig", newline="") as input_file:
             reader = csv.DictReader(input_file)
             missing = [column for column in columns if column not in (reader.fieldnames or [])]
             if missing:
                 raise ValueError(f"CSV has no columns: {', '.join(missing)}")
-            for row_number, row in enumerate(reader, start=2):
-                content = "\n".join(f"{column}: {row[column] or ''}" for column in columns)
-                documents.append(_document(source, content, "csv", row_number, file_size))
-        return documents
+            return _map_documents(enumerate(reader, start=2), transform, source.workers)

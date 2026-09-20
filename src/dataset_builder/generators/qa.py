@@ -9,7 +9,7 @@ from dataset_builder.models import Chunk, Message, MessageRole, TrainingSample
 
 QA_SYSTEM_PROMPT = (
     "根据提供的文本生成一个或多个可由文本直接回答的问题与答案。"
-    "只返回 JSON 对象，格式为 {\"pairs\": [{\"question\": \"...\", \"answer\": \"...\"}]}。"
+    "只返回一个 json 对象，不要解释或代码块，格式为 {\"pairs\": [{\"question\": \"...\", \"answer\": \"...\"}]}。"
 )
 
 

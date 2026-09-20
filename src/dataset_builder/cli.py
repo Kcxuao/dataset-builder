@@ -29,6 +29,7 @@ def parser() -> argparse.ArgumentParser:
     build.add_argument("--splitter", choices=["auto", "fixed", "paragraph", "markdown"], default="auto")
     build.add_argument("--max-chars", type=int, default=1000)
     build.add_argument("--overlap", type=int, default=0)
+    build.add_argument("--parser-workers", type=int, default=1)
     build.add_argument("--content-field", help="JSON/JSONL field path, such as article.body")
     build.add_argument("--content-column", action="append", default=[], help="CSV column to include; repeat as needed")
 
@@ -74,7 +75,7 @@ async def run(args: argparse.Namespace) -> object:
                     summary = await builder.build(
                         args.input, args.project_name or args.input.stem, args.generator,
                         args.splitter, args.max_chars, args.overlap,
-                        args.content_field, tuple(args.content_column),
+                        args.content_field, tuple(args.content_column), parser_workers=args.parser_workers,
                     )
                 else:
                     summary = await builder.retry_failed(args.project_id)

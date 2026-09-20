@@ -20,7 +20,7 @@ TEST_DATABASE_URL=postgresql+asyncpg://user:password@host:port/test_database uv 
 
 ## LLM 配置
 
-QA 和 Instruction Generator 使用 OpenAI Compatible Chat Completions API。`.env.example` 列出 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`、`LLM_TEMPERATURE`、`LLM_MAX_TOKENS`、`LLM_TIMEOUT`、`LLM_CONCURRENCY_LIMIT` 和 `LLM_MAX_RETRIES`。本地无需认证的兼容服务可以省略 API Key。
+QA 和 Instruction 生成器使用兼容接口。`.env.example` 列出模型地址、密钥、模型名称、温度、输出上限、超时、并发上限和重试次数。本地无需认证的兼容服务可以省略密钥。`LLM_CONCURRENCY_LIMIT` 控制同时进行的内容块模型请求数，修改后重启服务。对于支持 JSON 输出模式的服务，可设置 `LLM_JSON_MODE=true`；对于支持思考开关的 DeepSeek 服务，可设置 `LLM_THINKING=false`，避免短输出上限被思考内容耗尽。若出现输出截断提示，可提高 `LLM_MAX_TOKENS`。其他兼容服务不支持思考参数时，不要设置 `LLM_THINKING`。
 
 ## CLI 工作流
 
@@ -41,9 +41,12 @@ JSON 和 JSONL 导入需显式选择内容字段，支持用点号指定嵌套�
 uv run dataset-builder build articles.json --content-field article.body
 uv run dataset-builder build articles.jsonl --content-field text
 uv run dataset-builder build articles.csv --content-column title --content-column body
+uv run dataset-builder build articles.jsonl --content-field text --parser-workers 4
 ```
 
 JSON 根节点可以是单个对象或对象数组。JSONL 每个非空行是一个对象。CSV 将选中的列按 `列名: 值` 拼成文档内容。缺失字段或非字符串内容会报错；每条结构化记录的行号或数组索引会保留在来源元数据中。
+
+`--parser-workers` 和页面中的“解析工作线程数”可设为 1 到 16；结构化文件的独立记录及多个文档的切分可并行处理。单个 TXT 或 Markdown 文件本身只有一个解析任务，增加解析线程数不会加快该文件的读取；这类任务主要通过模型请求并发数加快生成阶段。
 
 ## Web 工作台与 API
 

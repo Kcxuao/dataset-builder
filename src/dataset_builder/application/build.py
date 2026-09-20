@@ -4,6 +4,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
@@ -56,10 +57,11 @@ class BuildService:
         content_field: str | None = None,
         content_columns: tuple[str, ...] = (),
         entrypoint: str = "cli",
+        parser_workers: int = 1,
     ) -> BuildSummary:
         prepared = await self.prepare_build(
             path, project_name, generator_mode, splitter_mode, max_chunk_length, overlap,
-            content_field, content_columns, entrypoint,
+            content_field, content_columns, entrypoint, parser_workers,
         )
         return await self.execute_build(prepared.run_id, path)
 
@@ -74,6 +76,7 @@ class BuildService:
         content_field: str | None = None,
         content_columns: tuple[str, ...] = (),
         entrypoint: str = "cli",
+        parser_workers: int = 1,
     ) -> BuildSummary:
         if generator_mode not in {"qa", "instruction"}:
             raise ValueError("generator_mode must be qa or instruction")
@@ -94,6 +97,8 @@ class BuildService:
             raise ValueError("--content-column is only supported for CSV")
         if max_chunk_length < 1 or overlap < 0 or overlap >= max_chunk_length:
             raise ValueError("max_chunk_length must be positive and overlap must be smaller")
+        if not 1 <= parser_workers <= 16:
+            raise ValueError("解析工作线程数必须在 1 到 16 之间")
 
         project_id, run_id = uuid4(), uuid4()
         async with self.sessions() as session:
@@ -106,6 +111,7 @@ class BuildService:
                     "max_chunk_length": max_chunk_length, "overlap": overlap,
                     "content_field": content_field, "content_columns": list(content_columns),
                     "entrypoint": entrypoint,
+                    "parser_workers": parser_workers,
                     "llm": self._llm_signature(),
                 },
                 started_at=utc_now(),
@@ -126,6 +132,7 @@ class BuildService:
                 project_id, run_id, path, configuration["generator"], configuration["splitter"],
                 configuration["max_chunk_length"], configuration["overlap"],
                 configuration["content_field"], tuple(configuration["content_columns"]),
+                configuration.get("parser_workers", 1),
             )
         except Exception as exc:
             async with self.sessions() as session:
@@ -148,6 +155,7 @@ class BuildService:
         overlap: int,
         content_field: str | None,
         content_columns: tuple[str, ...],
+        parser_workers: int,
     ) -> BuildSummary:
         parser = {
             ".txt": TextParser,
@@ -163,10 +171,15 @@ class BuildService:
             run.current_stage = PipelineStatus.PARSING
             await session.commit()
         logger.info("开始解析文件：运行编号 %s，文件 %s", run_id, path.name)
+        parse_started = perf_counter()
         documents = await asyncio.to_thread(parser.parse, ImportSource(
             path=path, project_id=project_id,
-            content_field=content_field, content_columns=content_columns,
+            content_field=content_field, content_columns=content_columns, workers=parser_workers,
         ))
+        logger.info(
+            "文件解析完成：运行编号 %s，文档 %d 个，耗时 %.2f 秒",
+            run_id, len(documents), perf_counter() - parse_started,
+        )
 
         mode = "markdown" if splitter_mode == "auto" and path.suffix.lower() in {".md", ".markdown"} else splitter_mode
         if mode == "auto":
@@ -181,10 +194,17 @@ class BuildService:
             run.status = PipelineStatus.SPLITTING
             run.current_stage = PipelineStatus.SPLITTING
             await session.commit()
-        logger.info("开始切分内容：运行编号 %s，文档 %d 个", run_id, len(documents))
+        logger.info("开始切分内容：运行编号 %s，文档 %d 个，工作线程 %d 个", run_id, len(documents), parser_workers)
+        split_started = perf_counter()
         chunks: list[Chunk] = []
-        for document in documents:
-            chunks.extend(await asyncio.to_thread(splitter.split, document))
+        for start in range(0, len(documents), parser_workers):
+            group = documents[start:start + parser_workers]
+            for result in await asyncio.gather(*(asyncio.to_thread(splitter.split, document) for document in group)):
+                chunks.extend(result)
+        logger.info(
+            "内容切分完成：运行编号 %s，内容块 %d 个，耗时 %.2f 秒",
+            run_id, len(chunks), perf_counter() - split_started,
+        )
         async with self.sessions() as session:
             run = await session.get(PipelineRunRow, run_id)
             run.status = PipelineStatus.SPLITTING
@@ -265,51 +285,18 @@ class BuildService:
         seen: set[tuple[UUID, str]],
     ) -> tuple[int, int]:
         generator = (QAGenerator if generator_mode == "qa" else InstructionGenerator)(self.client, project_id)
+        concurrency = max(1, getattr(getattr(self.client, "settings", None), "concurrency_limit", 1))
+        logger.info("开始并发生成：运行编号 %s，模型请求并发上限 %d", run_id, concurrency)
+        generation_started = perf_counter()
         sample_count = 0
         failed_count = 0
-        for chunk in chunks:
-            try:
-                generated = await generator.generate(chunk)
-            except Exception as exc:
-                failed_count += 1
-                async with self.sessions() as session:
-                    row = await session.get(ChunkRow, chunk.id)
-                    run = await session.get(PipelineRunRow, run_id)
-                    row.generation_status = "failed"
-                    row.metadata_ = {**row.metadata_, "generation_error": f"{type(exc).__name__}: {exc}"[:500]}
-                    run.failed_items += 1
-                    await session.commit()
-                logger.warning(
-                    "内容块生成失败：运行编号 %s，内容块编号 %s，累计失败 %d 个", run_id, chunk.id, failed_count
+        for start in range(0, len(chunks), concurrency):
+            group = chunks[start:start + concurrency]
+            results = await asyncio.gather(*(generator.generate(chunk) for chunk in group), return_exceptions=True)
+            for chunk, result in zip(group, results, strict=True):
+                sample_count, failed_count = await self._save_generation_result(
+                    project_id, run_id, chunk, result, seen, sample_count, failed_count
                 )
-                continue
-
-            cleaned = self.cleaner.clean(generated, seen)
-            issues_by_id: dict[UUID, list[ValidationIssue]] = {}
-            for issue in cleaned.issues:
-                issues_by_id.setdefault(issue.sample_id, []).append(issue)
-            new_hashes: set[tuple[UUID, str]] = set()
-            async with self.sessions() as session:
-                row = await session.get(ChunkRow, chunk.id)
-                run = await session.get(PipelineRunRow, run_id)
-                for sample in [*cleaned.accepted, *cleaned.rejected]:
-                    issues = issues_by_id.get(sample.id, []) + self.validator.validate(sample)
-                    await self._add_sample(session, sample, issues)
-                    if not issues:
-                        new_hashes.add((sample.project_id, sample.content_hash))
-                row.generation_status = "success"
-                row.metadata_ = {key: value for key, value in row.metadata_.items() if key != "generation_error"}
-                run.status = PipelineStatus.GENERATING
-                run.current_stage = PipelineStatus.GENERATING
-                run.completed_items += 1
-                await session.commit()
-            logger.info(
-                "内容块处理完成：运行编号 %s，内容块编号 %s，进度 %d/%d，本块样本 %d 条",
-                run_id, chunk.id, run.completed_items + run.failed_items, run.total_items,
-                len(cleaned.accepted) + len(cleaned.rejected),
-            )
-            seen.update(new_hashes)
-            sample_count += len(cleaned.accepted) + len(cleaned.rejected)
 
         async with self.sessions() as session:
             run = await session.get(PipelineRunRow, run_id)
@@ -318,9 +305,62 @@ class BuildService:
             run.finished_at = utc_now()
             await session.commit()
         logger.info(
-            "构建任务结束：运行编号 %s，成功内容块 %d 个，失败内容块 %d 个，等待人工审核",
-            run_id, run.completed_items, failed_count,
+            "构建任务结束：运行编号 %s，成功内容块 %d 个，失败内容块 %d 个，生成耗时 %.2f 秒，等待人工审核",
+            run_id, run.completed_items, failed_count, perf_counter() - generation_started,
         )
+        return sample_count, failed_count
+
+    async def _save_generation_result(
+        self, project_id: UUID, run_id: UUID, chunk: Chunk,
+        result: list[TrainingSample] | BaseException, seen: set[tuple[UUID, str]],
+        sample_count: int, failed_count: int,
+    ) -> tuple[int, int]:
+        if isinstance(result, BaseException) and not isinstance(result, Exception):
+            raise result
+        try:
+            if isinstance(result, Exception):
+                raise result
+            generated = result
+        except Exception as exc:
+            failed_count += 1
+            async with self.sessions() as session:
+                row = await session.get(ChunkRow, chunk.id)
+                run = await session.get(PipelineRunRow, run_id)
+                row.generation_status = "failed"
+                row.metadata_ = {**row.metadata_, "generation_error": f"{type(exc).__name__}: {exc}"[:500]}
+                run.failed_items += 1
+                await session.commit()
+            logger.warning(
+                "内容块生成失败：运行编号 %s，内容块编号 %s，累计失败 %d 个", run_id, chunk.id, failed_count
+            )
+            return sample_count, failed_count
+
+        cleaned = self.cleaner.clean(generated, seen)
+        issues_by_id: dict[UUID, list[ValidationIssue]] = {}
+        for issue in cleaned.issues:
+            issues_by_id.setdefault(issue.sample_id, []).append(issue)
+        new_hashes: set[tuple[UUID, str]] = set()
+        async with self.sessions() as session:
+            row = await session.get(ChunkRow, chunk.id)
+            run = await session.get(PipelineRunRow, run_id)
+            for sample in [*cleaned.accepted, *cleaned.rejected]:
+                issues = issues_by_id.get(sample.id, []) + self.validator.validate(sample)
+                await self._add_sample(session, sample, issues)
+                if not issues:
+                    new_hashes.add((sample.project_id, sample.content_hash))
+            row.generation_status = "success"
+            row.metadata_ = {key: value for key, value in row.metadata_.items() if key != "generation_error"}
+            run.status = PipelineStatus.GENERATING
+            run.current_stage = PipelineStatus.GENERATING
+            run.completed_items += 1
+            await session.commit()
+        logger.info(
+            "内容块处理完成：运行编号 %s，内容块编号 %s，进度 %d/%d，本块样本 %d 条",
+            run_id, chunk.id, run.completed_items + run.failed_items, run.total_items,
+            len(cleaned.accepted) + len(cleaned.rejected),
+        )
+        seen.update(new_hashes)
+        sample_count += len(cleaned.accepted) + len(cleaned.rejected)
         return sample_count, failed_count
 
     def _llm_signature(self) -> dict[str, object]:

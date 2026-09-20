@@ -23,8 +23,12 @@ class FakeLLMClient:
 
 
 class FakeSDK:
-    def __init__(self, responses: list[str | None]) -> None:
+    def __init__(
+        self, responses: list[str | None], finish_reason: str | None = None, reasoning: str | None = None,
+    ) -> None:
         self.responses = iter(responses)
+        self.finish_reason = finish_reason
+        self.reasoning = reasoning
         self.calls = 0
         self.kwargs: list[dict[str, object]] = []
         self.active = 0
@@ -39,11 +43,17 @@ class FakeSDK:
         await asyncio.sleep(0.01)
         self.active -= 1
         content = next(self.responses)
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+        return SimpleNamespace(choices=[SimpleNamespace(
+            finish_reason=self.finish_reason,
+            message=SimpleNamespace(content=content, reasoning_content=self.reasoning),
+        )])
 
 
 def settings(**overrides: object) -> LLMSettings:
-    values = {"base_url": "http://localhost:8000/v1", "model": "fake-model", "max_retries": 0, **overrides}
+    values = {
+        "base_url": "http://localhost:8000/v1", "model": "fake-model",
+        "max_retries": 0, "json_mode": False, "thinking": None, **overrides,
+    }
     return LLMSettings.model_validate(values)
 
 
@@ -117,6 +127,34 @@ async def test_client_exhausts_retries_on_invalid_response() -> None:
     with pytest.raises(LLMResponseError):
         await client.generate([Message(role=MessageRole.USER, content="Source")], QAResponse)
     assert sdk.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_client_requests_json_and_nonthinking_mode_when_configured() -> None:
+    sdk = FakeSDK(['{"pairs": [{"question": "Q", "answer": "A"}]}'])
+    client = OpenAICompatibleClient(settings(json_mode=True, thinking=False), sdk=sdk)
+
+    await client.generate([Message(role=MessageRole.USER, content="Source")], QAResponse)
+
+    assert sdk.kwargs[0]["response_format"] == {"type": "json_object"}
+    assert sdk.kwargs[0]["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+@pytest.mark.asyncio
+async def test_client_explains_truncated_and_reasoning_only_results() -> None:
+    message = [Message(role=MessageRole.USER, content="Source")]
+    truncated = OpenAICompatibleClient(settings(), sdk=FakeSDK(["{"], finish_reason="length"))
+    with pytest.raises(LLMResponseError, match="输出达到.*上限"):
+        await truncated.generate(message, QAResponse)
+
+    reasoning_only = OpenAICompatibleClient(settings(), sdk=FakeSDK([None], reasoning="private reasoning"))
+    with pytest.raises(LLMResponseError, match="没有最终正文"):
+        await reasoning_only.generate(message, QAResponse)
+
+
+def test_response_parser_reports_schema_field() -> None:
+    with pytest.raises(LLMResponseError, match="pairs.0.answer"):
+        parse_response('{"pairs": [{"question": "Q"}]}', QAResponse)
 
 
 @pytest.mark.asyncio

@@ -24,3 +24,5 @@ class LLMSettings(BaseSettings):
     timeout: float = Field(default=60, gt=0)
     concurrency_limit: int = Field(default=4, gt=0)
     max_retries: int = Field(default=2, ge=0)
+    json_mode: bool = False
+    thinking: bool | None = None

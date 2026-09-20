@@ -18,6 +18,7 @@ class ImportSource:
     project_id: UUID
     content_field: str | None = None
     content_columns: tuple[str, ...] = ()
+    workers: int = 1
 
 
 class Parser(Protocol):
