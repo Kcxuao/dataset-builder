@@ -31,6 +31,12 @@ class FakeLLMClient:
         return response_model.model_validate({"pairs": [{"question": "What?", "answer": "Answer"}]})
 
 
+class MappingFakeLLMClient:
+    async def generate(self, messages: list[Message], response_model: type[QAResponse]) -> QAResponse:
+        content = messages[-1].content
+        return response_model.model_validate({"pairs": [{"question": f"What is {content}?", "answer": content}]})
+
+
 @pytest.mark.asyncio
 async def test_build_review_and_export_flow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     database_url = os.getenv("TEST_DATABASE_URL")
@@ -116,6 +122,51 @@ async def test_build_review_and_export_flow(tmp_path: Path, monkeypatch: pytest.
                     assert run.completed_items == 2
                     assert run.failed_items == 0
                     assert len(await ReviewService(session).list_samples(summary.project_id)) == 2
+            finally:
+                await transaction.rollback()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("filename,contents,mapping", [
+    ("records.json", '[{"body":"One"},{"body":"Two"}]', {"content_field": "body"}),
+    ("records.jsonl", '{"body":"One"}\n{"body":"Two"}\n', {"content_field": "body"}),
+    ("records.csv", "body,ignored\nOne,x\nTwo,y\n", {"content_columns": ("body",)}),
+])
+async def test_structured_file_build_flow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, filename: str, contents: str, mapping: dict
+) -> None:
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("Set TEST_DATABASE_URL to an isolated PostgreSQL database")
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    await asyncio.to_thread(command.upgrade, Config("alembic.ini"), "head")
+    source = tmp_path / filename
+    source.write_text(contents, encoding="utf-8")
+    engine = create_engine(database_url)
+    try:
+        async with engine.connect() as connection:
+            transaction = await connection.begin()
+            sessions = async_sessionmaker(
+                bind=connection, class_=AsyncSession,
+                expire_on_commit=False, join_transaction_mode="create_savepoint",
+            )
+            try:
+                summary = await BuildService(sessions, MappingFakeLLMClient()).build(
+                    source, "Mapped import", **mapping
+                )
+                assert summary.document_count == 2
+                assert summary.chunk_count == 2
+                assert summary.sample_count == 2
+                assert summary.failed_chunk_count == 0
+                async with sessions() as session:
+                    listed = await ReviewService(session).list_samples(summary.project_id)
+                    assert len(listed) == 2
+                    assert {item["chunk_content"] for item in listed} == (
+                        {"body: One", "body: Two"} if filename.endswith(".csv") else {"One", "Two"}
+                    )
+                    assert len({item["metadata"]["record_index"] for item in listed}) == 2
             finally:
                 await transaction.rollback()
     finally:

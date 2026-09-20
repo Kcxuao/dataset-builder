@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-已通过 CLI 打通 TXT/Markdown 构建、生成、清洗、校验、人工审核与 Alpaca/ShareGPT JSON/JSONL 导出流程。
+已通过 CLI 打通 TXT、Markdown、JSON、JSONL、CSV 构建、生成、清洗、校验、人工审核与 Alpaca/ShareGPT JSON/JSONL 导出流程。
 
 ## 已完成决策
 
@@ -19,7 +19,6 @@
 
 ## 当前未完成
 
-- 尚未实现 JSON、JSONL、CSV Parser。
 - 尚未实现 API 和 Web 页面。
 
 ## 已完成
@@ -53,11 +52,14 @@
 - 编辑后重新规范化、计算哈希和校验，并恢复待审核状态；导出仍只包含审核及校验通过的非删除样本。
 - Fake LLM 与真实 PostgreSQL 的往返测试覆盖构建、失败继续、重试、审核、编辑和导出。
 - 本阶段 `uv run ruff check .` 通过；完整测试套件连接本地 PostgreSQL 后 49 个测试通过。
+- 实现 JSON、JSONL、CSV Parser；JSON/JSONL 支持显式内容字段及嵌套对象路径，CSV 支持选择多个内容列。
+- 扩展 CLI 构建选项与来源元数据，保留结构化记录的数组索引或文件行号；字段缺失和不适合的内容类型给出明确错误。
+- Fake LLM 与真实 PostgreSQL 测试覆盖三种结构化文件从导入到样本预览的流程。
+- 本阶段 `uv run ruff check .` 通过；完整测试套件连接本地 PostgreSQL 后 61 个测试通过。
 
 ## 下一步任务
 
-1. 补充 JSON、JSONL、CSV 字段映射导入。
-2. 增加 Web API 与页面，复用现有应用服务。
+1. 增加 Web API 与页面，复用现有应用服务。
 
 ## 进度维护规则
 

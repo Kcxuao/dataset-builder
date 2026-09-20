@@ -34,3 +34,13 @@ uv run dataset-builder export PROJECT_ID --format sharegpt --output dataset.json
 ```
 
 `build` 输出项目和运行 ID。生成样本默认为待审核；`list` 和 `show` 显示来源 Chunk 与校验问题。编辑文件是消息数组，例如 `[{"role":"user","content":"问题"},{"role":"assistant","content":"答案"}]`。编辑后重新清洗、去重和校验，审核状态回到待审核。还可使用 `review SAMPLE_ID rejected`、`delete SAMPLE_ID`、`restore SAMPLE_ID`；Chunk 生成失败后用 `retry PROJECT_ID` 仅重试失败或未完成的 Chunk。导出只包含审核通过、校验通过且未软删除的样本。
+
+JSON 和 JSONL 导入需显式选择内容字段，支持用点号指定嵌套对象字段；CSV 导入需指定一个或多个内容列：
+
+```bash
+uv run dataset-builder build articles.json --content-field article.body
+uv run dataset-builder build articles.jsonl --content-field text
+uv run dataset-builder build articles.csv --content-column title --content-column body
+```
+
+JSON 根节点可以是单个对象或对象数组。JSONL 每个非空行是一个对象。CSV 将选中的列按 `列名: 值` 拼成文档内容。缺失字段或非字符串内容会报错；每条结构化记录的行号或数组索引会保留在来源元数据中。

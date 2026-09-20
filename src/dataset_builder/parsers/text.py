@@ -16,6 +16,8 @@ FENCE_PATTERN = re.compile(r"^[ \t]*(`{3,}|~{3,})")
 class ImportSource:
     path: Path
     project_id: UUID
+    content_field: str | None = None
+    content_columns: tuple[str, ...] = ()
 
 
 class Parser(Protocol):

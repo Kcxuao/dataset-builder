@@ -13,12 +13,15 @@ class Splitter(Protocol):
 
 
 def _chunks(document: SourceDocument, pieces: list[tuple[str, dict[str, object]]]) -> list[Chunk]:
+    source_metadata: dict[str, object] = {"source_name": document.source_name, "source_type": document.source_type}
+    if "record_index" in document.metadata:
+        source_metadata["record_index"] = document.metadata["record_index"]
     return [
         Chunk(
             document_id=document.id,
             index=index,
             content=content,
-            metadata={"source_name": document.source_name, "source_type": document.source_type, **metadata},
+            metadata={**source_metadata, **metadata},
         )
         for index, (content, metadata) in enumerate(pieces)
         if content

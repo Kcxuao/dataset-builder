@@ -19,7 +19,7 @@ from dataset_builder.db.orm import (
 from dataset_builder.generators import InstructionGenerator, QAGenerator
 from dataset_builder.llm import LLMClient
 from dataset_builder.models import Chunk, PipelineStatus, TrainingSample, ValidationIssue, utc_now
-from dataset_builder.parsers import ImportSource, MarkdownParser, TextParser
+from dataset_builder.parsers import CSVParser, ImportSource, JSONLParser, JSONParser, MarkdownParser, TextParser
 from dataset_builder.splitters import FixedLengthSplitter, MarkdownHeadingSplitter, ParagraphSplitter
 from dataset_builder.validators import SampleValidator
 
@@ -49,6 +49,8 @@ class BuildService:
         splitter_mode: str = "auto",
         max_chunk_length: int = 1000,
         overlap: int = 0,
+        content_field: str | None = None,
+        content_columns: tuple[str, ...] = (),
     ) -> BuildSummary:
         if generator_mode not in {"qa", "instruction"}:
             raise ValueError("generator_mode must be qa or instruction")
@@ -56,6 +58,17 @@ class BuildService:
             raise ValueError("splitter_mode must be auto, fixed, paragraph, or markdown")
         if not project_name.strip():
             raise ValueError("project_name must not be blank")
+        extension = path.suffix.lower()
+        if extension not in {".txt", ".md", ".markdown", ".json", ".jsonl", ".csv"}:
+            raise ValueError(f"Unsupported input format: {extension}")
+        if extension in {".json", ".jsonl"} and not content_field:
+            raise ValueError("JSON and JSONL imports require --content-field")
+        if extension == ".csv" and not content_columns:
+            raise ValueError("CSV imports require --content-column")
+        if content_field and extension not in {".json", ".jsonl"}:
+            raise ValueError("--content-field is only supported for JSON and JSONL")
+        if content_columns and extension != ".csv":
+            raise ValueError("--content-column is only supported for CSV")
 
         project_id, run_id = uuid4(), uuid4()
         async with self.sessions() as session:
@@ -66,6 +79,7 @@ class BuildService:
                 configuration={
                     "generator": generator_mode, "splitter": splitter_mode,
                     "max_chunk_length": max_chunk_length, "overlap": overlap,
+                    "content_field": content_field, "content_columns": list(content_columns),
                     "llm": self._llm_signature(),
                 },
                 started_at=utc_now(),
@@ -74,7 +88,8 @@ class BuildService:
 
         try:
             return await self._process(
-                project_id, run_id, path, generator_mode, splitter_mode, max_chunk_length, overlap
+                project_id, run_id, path, generator_mode, splitter_mode,
+                max_chunk_length, overlap, content_field, content_columns,
             )
         except Exception as exc:
             async with self.sessions() as session:
@@ -94,18 +109,28 @@ class BuildService:
         splitter_mode: str,
         max_chunk_length: int,
         overlap: int,
+        content_field: str | None,
+        content_columns: tuple[str, ...],
     ) -> BuildSummary:
-        parser = TextParser() if path.suffix.lower() == ".txt" else MarkdownParser()
-        if path.suffix.lower() not in {".txt", ".md", ".markdown"}:
-            raise ValueError(f"Unsupported input format: {path.suffix}")
+        parser = {
+            ".txt": TextParser,
+            ".md": MarkdownParser,
+            ".markdown": MarkdownParser,
+            ".json": JSONParser,
+            ".jsonl": JSONLParser,
+            ".csv": CSVParser,
+        }[path.suffix.lower()]()
         async with self.sessions() as session:
             run = await session.get(PipelineRunRow, run_id)
             run.status = PipelineStatus.PARSING
             run.current_stage = PipelineStatus.PARSING
             await session.commit()
-        documents = parser.parse(ImportSource(path=path, project_id=project_id))
+        documents = parser.parse(ImportSource(
+            path=path, project_id=project_id,
+            content_field=content_field, content_columns=content_columns,
+        ))
 
-        mode = "markdown" if splitter_mode == "auto" and path.suffix.lower() != ".txt" else splitter_mode
+        mode = "markdown" if splitter_mode == "auto" and path.suffix.lower() in {".md", ".markdown"} else splitter_mode
         if mode == "auto":
             mode = "paragraph"
         splitter = {
