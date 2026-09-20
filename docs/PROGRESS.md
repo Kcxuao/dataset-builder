@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-已完成工程骨架、领域模型、数据库基础设施、TXT/Markdown 解析与基础切分、QA/Instruction 生成、基础清洗与校验；尚未打通完整数据处理流程。
+已完成工程骨架、领域模型、数据库基础设施、TXT/Markdown 解析与基础切分、QA/Instruction 生成、基础清洗与校验，以及 Alpaca/ShareGPT JSON/JSONL 导出；尚未打通完整数据处理流程。
 
 ## 已完成决策
 
@@ -19,7 +19,7 @@
 
 ## 当前未完成
 
-- 尚未实现 JSON、JSONL、CSV Parser、Formatter 和 Exporter。
+- 尚未实现 JSON、JSONL、CSV Parser。
 - CLI 只有可运行的占位入口，尚无业务命令。
 - 尚未实现 API 和 Web 页面。
 
@@ -45,12 +45,16 @@
 - 实现基础 Cleaner：文本首尾和 NFC 规范化、空内容与长度检查、项目范围内的内容哈希精确去重；被拒样本与问题记录均保留。
 - 实现统一 IR 的消息结构、角色、顺序和目标格式兼容性校验；Alpaca 多轮或带 system 消息会生成明确问题。
 - 本阶段 `uv run ruff check .` 通过；完整测试套件连接本地 PostgreSQL 后 41 个测试通过。
+- 实现独立于 ORM 的 Alpaca、ShareGPT Formatter；不兼容样本返回明确的 ValidationIssue，避免多轮消息被静默截断。
+- 实现 JSON、JSONL 逐条写入与临时文件原子替换；PostgreSQL 导出服务分批读取，仅选择已审核、已校验且未删除的样本，并记录导出状态与数量。
+- 使用真实 PostgreSQL 验证默认筛选和格式不兼容时旧文件保留，测试数据已回滚。
+- 本阶段 `uv run ruff check .` 通过；完整测试套件连接本地 PostgreSQL 后 48 个测试通过。
 
 ## 下一步任务
 
-1. 实现 Alpaca、ShareGPT Formatter 与 JSON、JSONL Exporter。
-2. 打通 CLI 流程与样本审核能力。
-3. 后续补充 JSON、JSONL、CSV 字段映射导入。
+1. 打通 CLI 流程与样本审核能力。
+2. 补充 JSON、JSONL、CSV 字段映射导入。
+3. 后续增加 Web API 与页面。
 
 ## 进度维护规则
 
