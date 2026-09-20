@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-已完成首阶段工程骨架与领域模型，尚未实现数据处理流程。
+已完成工程骨架、领域模型、数据库基础设施和 TXT/Markdown 解析与基础切分，尚未打通完整数据处理流程。
 
 ## 已完成决策
 
@@ -19,11 +19,9 @@
 
 ## 当前未完成
 
-- 尚未配置数据库与 Alembic。
-- 尚未实现 Parser、Splitter、Generator、Cleaner、Validator、Formatter 和 Exporter。
+- 尚未实现 JSON、JSONL、CSV Parser，以及 Generator、Cleaner、Validator、Formatter 和 Exporter。
 - CLI 只有可运行的占位入口，尚无业务命令。
 - 尚未实现 API 和 Web 页面。
-- 尚未建立 PostgreSQL 集成测试。
 
 ## 已完成
 
@@ -32,12 +30,20 @@
 - 建立领域模型单元测试，验证必填字段、消息角色、状态枚举与样本来源关联。
 - 验证 CLI 占位入口可启动。
 - `uv run ruff check .` 通过；`uv run pytest` 通过（4 个单元测试）。
+- 配置 SQLAlchemy Async 会话、PostgreSQL ORM 映射、Alembic 异步迁移环境和初始迁移；数据库连接从环境变量读取。
+- 建立数据库 Schema 单元测试与独立的 PostgreSQL 集成测试；Alembic 离线 SQL 生成通过。
+- 本阶段 `uv run ruff check .` 通过；`uv run pytest` 为 6 通过、1 跳过（缺少 `TEST_DATABASE_URL`）。
+- 已在本地 PostgreSQL `dataset_builder` 数据库上执行初始迁移；独立数据库往返集成测试通过（1 个测试，测试数据已回滚）。
+- 提供本地连接后完整测试套件为 7 通过，`uv run ruff check .` 通过。
+- 实现 TXT、Markdown Parser；Markdown 标题信息保留在文档元数据中，文件名、类型和字节大小可追踪。
+- 实现固定长度、段落和 Markdown 标题切分，支持最大长度与可选重叠，并为 Chunk 记录顺序和来源信息。
+- 本阶段 `uv run ruff check .` 通过；完整测试套件连接本地 PostgreSQL 后 15 个测试通过。
 
 ## 下一步任务
 
-1. 配置 PostgreSQL、SQLAlchemy Async 与 Alembic，并建立独立的集成测试。
-2. 实现 TXT、Markdown Parser 和基础 Splitter。
-3. 在后续阶段逐步打通生成、清洗、校验与导出流程。
+1. 实现 OpenAI Compatible Client 和 QA Generator，并使用 Fake LLM Client 测试。
+2. 逐步实现清洗、校验、格式转换与导出，再打通 CLI 流程。
+3. 后续补充 JSON、JSONL、CSV 字段映射导入。
 
 ## 进度维护规则
 
