@@ -1,5 +1,8 @@
 const $ = (id) => document.getElementById(id);
-const state = { projects: [], projectId: null, runId: null, pollTimer: null, lastRunStatus: null, samples: [], sampleId: null, offset: 0, limit: 20, presets: {} };
+const state = { projects: [], models: [], prompts: [], projectId: null, runId: null, pollTimer: null, lastRunStatus: null, samples: [], sampleId: null, offset: 0, limit: 20, modelEditId: null, promptEditId: null };
+const panels = ['import-panel', 'review-panel', 'export-panel', 'models-panel', 'prompts-panel', 'processing-panel', 'trash-panel'];
+function showPanels(...ids) { for (const id of panels) $(id).classList.toggle('hidden', !ids.includes(id)); $('stage-rail').classList.toggle('hidden', !ids.includes('import-panel') && !ids.includes('review-panel')); }
+function showSettings(panel, title) { clearTimeout(state.pollTimer); state.runId = null; state.projectId = null; showPanels(panel); $('progress-panel').classList.add('hidden'); $('retry-button').classList.add('hidden'); $('delete-project').classList.add('hidden'); $('project-title').textContent = title; $('project-subtitle').textContent = '在这里管理工作区配置。'; }
 const stageNames = { created: '任务已创建', importing: '正在导入', parsing: '正在解析', splitting: '正在切分', generating: '正在生成样本', cleaning: '正在清洗', validating: '正在校验', ready_for_review: '等待人工审核', completed: '处理完成', failed: '处理失败', interrupted: '任务已中断' };
 const activeStatuses = new Set(['created', 'importing', 'parsing', 'splitting', 'generating', 'cleaning', 'validating']);
 
@@ -46,7 +49,7 @@ function showImport() {
   clearTimeout(state.pollTimer); state.runId = null;
   state.projectId = null; state.sampleId = null; $('project-title').textContent = '创建你的第一个数据集';
   $('project-subtitle').textContent = '导入文档，生成可审核的训练样本。';
-  $('import-panel').classList.remove('hidden'); $('review-panel').classList.add('hidden'); $('export-panel').classList.add('hidden'); $('retry-button').classList.add('hidden'); $('progress-panel').classList.add('hidden');
+  showPanels('import-panel'); $('retry-button').classList.add('hidden'); $('delete-project').classList.add('hidden'); $('progress-panel').classList.add('hidden');
   for (const button of document.querySelectorAll('.project-item')) button.classList.remove('active');
 }
 async function selectProject(id, refreshProjects = true) {
@@ -54,7 +57,7 @@ async function selectProject(id, refreshProjects = true) {
   const project = state.projects.find((item) => item.id === id); if (!project) return;
   $('project-title').textContent = project.name;
   $('project-subtitle').textContent = `构建状态：${project.run_status || '未知'} · ${project.sample_count} 条样本`;
-  $('import-panel').classList.add('hidden'); $('review-panel').classList.remove('hidden'); $('export-panel').classList.remove('hidden');
+  showPanels('review-panel', 'export-panel'); $('delete-project').classList.remove('hidden');
   $('retry-button').classList.toggle('hidden', !project.failed_chunks);
   if (refreshProjects) for (const button of document.querySelectorAll('.project-item')) button.classList.toggle('active', button.dataset.projectId === id);
   await loadSamples();
@@ -107,23 +110,82 @@ async function loadSamples(selectId = null) {
   else { state.sampleId = null; $('detail-title').textContent = '选择样本'; $('detail-status').textContent = ''; $('detail-body').replaceChildren(node('div', 'empty-detail', '选择左侧样本查看消息、来源与校验结果。')); }
 }
 async function loadModels(selectedId = '') {
-  const models = await api('/api/models'); const select = $('model-select');
-  select.replaceChildren(); const fallback = node('option', '', '默认环境配置'); fallback.value = ''; select.append(fallback);
+  const models = await api('/api/models'); state.models = models; const select = $('model-select');
+  select.replaceChildren(); const fallback = node('option', '', '工作区默认模型'); fallback.value = ''; select.append(fallback);
   for (const model of models) { const option = node('option', '', `${model.name} · ${model.model}`); option.value = model.id; select.append(option); }
   select.value = selectedId;
+  const defaults = $('default-model-select'); const current = defaults.value; defaults.replaceChildren();
+  const env = node('option', '', '环境配置模型'); env.value = ''; defaults.append(env);
+  for (const model of models) { const option = node('option', '', `${model.name} · ${model.model}`); option.value = model.id; defaults.append(option); }
+  defaults.value = current;
+  renderModelList();
 }
 function renderPresets() {
   const mode = $('generator-select').value; const select = $('prompt-preset'); select.replaceChildren();
-  for (const preset of state.presets[mode] || []) { const option = node('option', '', preset.name); option.value = preset.id; select.append(option); }
-  const custom = node('option', '', '自定义提示词'); custom.value = 'custom'; select.append(custom);
+  for (const preset of state.prompts.filter((item) => item.mode === mode)) { const option = node('option', '', preset.name); option.value = preset.id; select.append(option); }
   updatePromptPreview();
 }
 function updatePromptPreview() {
-  const custom = $('prompt-preset').value === 'custom';
-  $('custom-prompt-field').classList.toggle('hidden', !custom);
-  $('custom-prompt').required = custom;
-  const preset = (state.presets[$('generator-select').value] || []).find((item) => item.id === $('prompt-preset').value);
-  $('prompt-preview').textContent = custom ? '系统会自动附加输出格式要求。' : (preset?.prompt || '');
+  const preset = state.prompts.find((item) => item.id === $('prompt-preset').value);
+  $('prompt-preview').textContent = preset?.instruction || '';
+}
+function configRow(title, description) { const row = node('div', 'config-row'); const info = node('div'); info.append(node('strong', '', title), node('small', '', description)); row.append(info); return row; }
+function renderModelList() {
+  const list = $('model-list'); list.replaceChildren();
+  for (const model of state.models) {
+    const row = configRow(model.name, `${model.model} · ${model.base_url} · 并发 ${model.concurrency_limit}`);
+    const setDefault = node('button', 'plain-button', '设为默认'); setDefault.type = 'button';
+    setDefault.addEventListener('click', () => run(async () => {
+      const current = await api('/api/workspace/settings');
+      await api('/api/workspace/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parser_workers: current.parser_workers, default_model_id: model.id }) });
+      await loadProcessing(); notice(`已将“${model.name}”设为默认模型。`);
+    }));
+    const edit = node('button', 'plain-button', '编辑'); edit.type = 'button'; edit.addEventListener('click', () => {
+      state.modelEditId = model.id; const form = $('model-form');
+      for (const key of ['name', 'base_url', 'model', 'temperature', 'max_tokens', 'timeout', 'concurrency_limit', 'max_retries']) form.elements[key].value = model[key];
+      form.elements.thinking.value = model.thinking === null ? '' : String(model.thinking);
+      form.elements.json_mode.checked = model.json_mode; form.elements.api_key.value = '';
+      $('model-form-title').textContent = `编辑 ${model.name}`; $('cancel-model-edit').classList.remove('hidden');
+      form.scrollIntoView({ behavior: 'smooth' });
+    });
+    const del = node('button', 'danger-button', '归档'); del.type = 'button'; del.addEventListener('click', () => run(async () => {
+      if (!confirm(`归档模型“${model.name}”？历史任务仍可重试。`)) return;
+      await api(`/api/models/${model.id}`, { method: 'DELETE' }); await loadModels(); notice('模型已归档。');
+    })); row.append(setDefault, edit, del); list.append(row);
+  }
+}
+async function loadPrompts() { state.prompts = await api('/api/prompts'); renderPresets(); renderPromptList(); }
+function renderPromptList() {
+  const list = $('prompt-list'); list.replaceChildren();
+  for (const prompt of state.prompts) {
+    const row = configRow(prompt.name, `${prompt.mode === 'qa' ? '问答' : '指令'} · ${prompt.instruction}`);
+    if (!prompt.builtin) {
+      const edit = node('button', 'plain-button', '编辑'); edit.type = 'button'; edit.addEventListener('click', () => {
+        state.promptEditId = prompt.id; const form = $('prompt-form');
+        form.elements.name.value = prompt.name; form.elements.mode.value = prompt.mode;
+        form.elements.instruction.value = prompt.instruction;
+        $('prompt-form-title').textContent = `编辑 ${prompt.name}`; $('cancel-prompt-edit').classList.remove('hidden');
+        form.scrollIntoView({ behavior: 'smooth' });
+      });
+      const del = node('button', 'danger-button', '删除'); del.type = 'button'; del.addEventListener('click', () => run(async () => {
+        if (!confirm(`删除提示词“${prompt.name}”？`)) return;
+        await api(`/api/prompts/${prompt.id}`, { method: 'DELETE' }); await loadPrompts(); notice('提示词已删除。');
+      })); row.append(edit, del);
+    }
+    list.append(row);
+  }
+}
+async function loadProcessing() { const settings = await api('/api/workspace/settings'); $('processing-form').elements.parser_workers.value = settings.parser_workers; $('default-model-select').value = settings.default_model_id || ''; }
+async function loadTrash() {
+  const projects = await api('/api/projects?trash=true'); const list = $('trash-list'); list.replaceChildren();
+  if (!projects.length) list.append(node('p', 'empty-detail', '回收站为空。'));
+  for (const project of projects) {
+    const row = configRow(project.name, `${project.sample_count} 条样本`);
+    const restore = node('button', 'plain-button', '恢复'); restore.type = 'button'; restore.addEventListener('click', () => run(async () => {
+      await api(`/api/projects/${project.id}/restore`, { method: 'POST' }); await loadTrash(); await loadProjects(project.id); notice('数据集已恢复。');
+    })); row.append(restore); list.append(row);
+  }
 }
 function messageRow(message = { role: 'user', content: '' }) {
   const row = node('div', 'message-row'); const head = node('div', 'message-row-head');
@@ -161,8 +223,19 @@ async function renderDetail(id) {
   del.addEventListener('click', () => run(async () => { await api(`/api/samples/${id}/deleted`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_deleted: !sample.is_deleted }) }); notice('样本状态已更新。'); await loadSamples(id); })); buttons.append(del); actions.append(buttons); body.append(actions);
 }
 $('new-project').addEventListener('click', showImport);
+$('nav-models').addEventListener('click', () => { showSettings('models-panel', '模型配置'); run(() => loadModels()); });
+$('nav-prompts').addEventListener('click', () => { showSettings('prompts-panel', '提示词配置'); run(() => loadPrompts()); });
+$('nav-processing').addEventListener('click', () => { showSettings('processing-panel', '处理设置'); run(() => loadProcessing()); });
+$('nav-trash').addEventListener('click', () => { showSettings('trash-panel', '回收站'); run(() => loadTrash()); });
+$('delete-project').addEventListener('click', () => run(async () => {
+  const project = state.projects.find((item) => item.id === state.projectId); if (!project) return;
+  if (!confirm(`将数据集“${project.name}”移入回收站？`)) return;
+  await api(`/api/projects/${project.id}`, { method: 'DELETE' }); await loadProjects(); notice('数据集已移入回收站。');
+}));
 $('generator-select').addEventListener('change', renderPresets);
 $('prompt-preset').addEventListener('change', updatePromptPreview);
+$('cancel-model-edit').addEventListener('click', () => { state.modelEditId = null; $('model-form').reset(); $('model-form-title').textContent = '新增模型'; $('cancel-model-edit').classList.add('hidden'); });
+$('cancel-prompt-edit').addEventListener('click', () => { state.promptEditId = null; $('prompt-form').reset(); $('prompt-form-title').textContent = '新增提示词'; $('cancel-prompt-edit').classList.add('hidden'); });
 $('model-form').addEventListener('submit', (event) => { event.preventDefault(); run(async () => {
   const form = event.target; const values = Object.fromEntries(new FormData(form));
   values.temperature = Number(values.temperature); values.max_tokens = Number(values.max_tokens);
@@ -170,8 +243,24 @@ $('model-form').addEventListener('submit', (event) => { event.preventDefault(); 
   values.max_retries = Number(values.max_retries); values.json_mode = values.json_mode === 'on';
   values.thinking = values.thinking === '' ? null : values.thinking === 'true';
   if (!values.api_key) values.api_key = null;
-  const model = await api('/api/models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
-  form.querySelector('[name=api_key]').value = ''; await loadModels(model.id); notice('模型配置已保存并选中。');
+  const editing = state.modelEditId;
+  const model = await api(editing ? `/api/models/${editing}` : '/api/models', {
+    method: editing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values),
+  });
+  $('cancel-model-edit').click(); await loadModels(model.id); notice('模型配置已保存。');
+}); });
+$('prompt-form').addEventListener('submit', (event) => { event.preventDefault(); run(async () => {
+  const form = event.target; const values = Object.fromEntries(new FormData(form)); const editing = state.promptEditId;
+  await api(editing ? `/api/prompts/${editing}` : '/api/prompts', {
+    method: editing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values),
+  });
+  $('cancel-prompt-edit').click(); await loadPrompts(); notice('提示词已保存。');
+}); });
+$('processing-form').addEventListener('submit', (event) => { event.preventDefault(); run(async () => {
+  const values = Object.fromEntries(new FormData(event.target)); values.parser_workers = Number(values.parser_workers);
+  values.default_model_id = values.default_model_id || null;
+  await api('/api/workspace/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
+  notice('处理设置已保存。');
 }); });
 $('bulk-actions').addEventListener('click', (event) => {
   const button = event.target.closest('button[data-action]'); if (!button || !state.samples.length) return;
@@ -198,4 +287,4 @@ $('export-form').addEventListener('submit', (event) => { event.preventDefault();
   const result = await api(`/api/projects/${state.projectId}/exports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
   const link = $('download-link'); link.href = result.download_url; link.classList.remove('hidden'); notice(`已导出 ${result.sample_count} 条样本。`);
 }); });
-run(async () => { state.presets = await api('/api/prompt-presets'); renderPresets(); await loadModels(); await loadProjects(); });
+run(async () => { await loadModels(); await loadPrompts(); await loadProcessing(); await loadProjects(); });

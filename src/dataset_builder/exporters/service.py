@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataset_builder.db.orm import ExportRecordRow, TrainingSampleRow
+from dataset_builder.db.orm import ExportRecordRow, ProjectRow, TrainingSampleRow
 from dataset_builder.exporters.files import JSONExporter, JSONLExporter
 from dataset_builder.formatters import AlpacaFormatter, ShareGPTFormatter
 from dataset_builder.models import ExportFileType, ExportFormat, ExportRecord, TrainingSample, utc_now
@@ -27,6 +27,9 @@ class SampleExportService:
         file_type: ExportFileType,
         destination: Path,
     ) -> ExportRecord:
+        project = await self.session.get(ProjectRow, project_id)
+        if project is None or project.deleted_at is not None:
+            raise LookupError("数据集不存在")
         formatter = AlpacaFormatter() if format == ExportFormat.ALPACA else ShareGPTFormatter()
         exporter = JSONLExporter() if file_type == ExportFileType.JSONL else JSONExporter()
         record = ExportRecordRow(

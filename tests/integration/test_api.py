@@ -78,12 +78,21 @@ async def test_http_build_review_export(tmp_path: Path, monkeypatch: pytest.Monk
                 model_id = model.json()["id"]
                 assert "api_key" not in model.json()
                 assert "本地测试密钥" not in (await client.get("/api/models")).text
+                settings = await client.put("/api/workspace/settings", json={
+                    "parser_workers": 3, "default_model_id": model_id,
+                })
+                assert settings.status_code == 200
+                assert settings.json()["parser_workers"] == 3
+                prompt = await client.post("/api/prompts", json={
+                    "name": "测试提示词", "mode": "qa", "instruction": "请生成精确问答",
+                })
+                assert prompt.status_code == 201
+                assert any(item["id"] == prompt.json()["id"] for item in (await client.get("/api/prompts")).json())
                 presets = (await client.get("/api/prompt-presets")).json()
                 assert len(presets["qa"]) >= 3
                 created = await client.post(
                     "/api/projects/build", files={"file": ("source.txt", b"Test source text")},
-                    data={"project_name": "HTTP test", "model_id": model_id,
-                          "prompt_preset": "custom", "custom_prompt": "请生成精确问答"},
+                    data={"project_name": "HTTP test", "prompt_id": prompt.json()["id"]},
                 )
                 assert created.status_code == 202, created.text
                 assert selected_models[-1] == "example-model"
@@ -92,6 +101,7 @@ async def test_http_build_review_export(tmp_path: Path, monkeypatch: pytest.Monk
                 async with sessions() as session:
                     run = await session.get(PipelineRunRow, UUID(run_id))
                     assert run.configuration["model_id"] == model_id
+                    assert run.configuration["parser_workers"] == 3
                     assert "请生成精确问答" in run.configuration["prompt_text"]
                 progress = await client.get(f"/api/runs/{run_id}")
                 assert progress.status_code == 200
@@ -146,6 +156,27 @@ async def test_http_build_review_export(tmp_path: Path, monkeypatch: pytest.Monk
                 })
                 assert skipped.json()["updated_ids"] == []
                 assert len(skipped.json()["skipped"]) == 1
+                changed = await client.put(f"/api/models/{model_id}", json={
+                    "name": "测试模型", "base_url": "https://example.com/v1", "model": "example-model-v2",
+                })
+                assert changed.status_code == 200
+                assert changed.json()["id"] != model_id
+                assert model_id not in [item["id"] for item in (await client.get("/api/models")).json()]
+                retried = await client.post(f"/api/projects/{project_id}/retry")
+                assert retried.status_code == 202, retried.text
+                assert selected_models[-1] == "example-model"
+                assert (await client.delete(f"/api/models/{changed.json()['id']}")).status_code == 204
+                assert (await client.get("/api/workspace/settings")).json()["default_model_id"] is None
+                assert (await client.delete(f"/api/prompts/{prompt.json()['id']}")).status_code == 204
+                trashed = await client.delete(f"/api/projects/{project_id}")
+                assert trashed.status_code == 200
+                assert project_id in [item["id"] for item in (await client.get('/api/projects?trash=true')).json()]
+                assert project_id not in [item["id"] for item in (await client.get('/api/projects')).json()]
+                assert (await client.get(f"/api/samples/{sample_id}")).status_code == 404
+                assert (await client.post(f"/api/projects/{project_id}/retry")).status_code == 404
+                restored = await client.post(f"/api/projects/{project_id}/restore")
+                assert restored.status_code == 200
+                assert (await client.get(f"/api/samples/{sample_id}")).status_code == 200
                 deleted = await client.patch(f"/api/samples/{sample_id}/deleted", json={"is_deleted": True})
                 assert deleted.status_code == 200
                 empty = await client.post(
@@ -204,6 +235,8 @@ async def test_run_progress_is_visible_while_model_is_busy(tmp_path: Path, monke
                 assert progress["total_items"] == 1
                 assert progress["completed_items"] == 0
                 assert progress["sample_count"] == 0
+                busy_delete = await client.delete(f"/api/projects/{project_id}")
+                assert busy_delete.status_code == 409
             finally:
                 fake.resume.set()
                 await asyncio.wait_for(building, timeout=5)

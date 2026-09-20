@@ -18,13 +18,19 @@ class ProjectRow(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ModelConfigRow(Base):
     __tablename__ = "model_configs"
+    __table_args__ = (
+        Index("uq_model_configs_active_name", "name", unique=True, postgresql_where="archived_at IS NULL"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    name: Mapped[str] = mapped_column(String(255), unique=True)
+    name: Mapped[str] = mapped_column(String(255))
+    family_id: Mapped[UUID] = mapped_column(default=uuid4, index=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     base_url: Mapped[str] = mapped_column(Text)
     api_key: Mapped[str | None] = mapped_column(Text)
     model: Mapped[str] = mapped_column(String(255))
@@ -35,6 +41,24 @@ class ModelConfigRow(Base):
     max_retries: Mapped[int] = mapped_column(Integer, default=2)
     json_mode: Mapped[bool] = mapped_column(Boolean, default=False)
     thinking: Mapped[bool | None] = mapped_column(Boolean)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class WorkspaceSettingsRow(Base):
+    __tablename__ = "workspace_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    parser_workers: Mapped[int] = mapped_column(Integer, default=1)
+    default_model_id: Mapped[UUID | None] = mapped_column(ForeignKey("model_configs.id"))
+
+
+class PromptTemplateRow(Base):
+    __tablename__ = "prompt_templates"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(255))
+    mode: Mapped[str] = mapped_column(String(32))
+    instruction: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

@@ -8,6 +8,7 @@ def test_schema_contains_core_tables_and_lineage_foreign_keys() -> None:
     assert set(Base.metadata.tables) == {
         "projects", "source_documents", "chunks", "training_samples",
         "validation_issues", "pipeline_runs", "export_records", "model_configs",
+        "workspace_settings", "prompt_templates",
     }
     foreign_keys = {
         fk.target_fullname for fk in Base.metadata.tables["training_samples"].foreign_keys

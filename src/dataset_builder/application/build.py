@@ -247,6 +247,9 @@ class BuildService:
 
     async def retry_failed(self, project_id: UUID) -> BuildSummary:
         async with self.sessions() as session:
+            project = await session.get(ProjectRow, project_id)
+            if project is None or project.deleted_at is not None:
+                raise LookupError("数据集不存在")
             run = await session.scalar(
                 select(PipelineRunRow).where(PipelineRunRow.project_id == project_id)
                 .order_by(PipelineRunRow.started_at.desc()).limit(1)

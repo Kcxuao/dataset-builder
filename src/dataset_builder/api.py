@@ -17,7 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from dataset_builder.application.build import BuildService
 from dataset_builder.application.model_configs import ModelConfigInput, ModelConfigService
+from dataset_builder.application.projects import ProjectService
 from dataset_builder.application.review import ReviewService
+from dataset_builder.application.workspace import PromptTemplateInput, WorkspaceService, WorkspaceSettingsInput
 from dataset_builder.config import LLMSettings, Settings
 from dataset_builder.db.orm import (
     ChunkRow,
@@ -183,9 +185,14 @@ def create_app(
         return FileResponse(web_dir / "index.html")
 
     @app.get("/api/projects")
-    async def list_projects(factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)]) -> list[dict]:
+    async def list_projects(
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+        trash: bool = False,
+    ) -> list[dict]:
         async with factory() as session:
-            query = select(ProjectRow).order_by(ProjectRow.created_at.desc(), ProjectRow.id)
+            query = select(ProjectRow).where(
+                ProjectRow.deleted_at.is_not(None) if trash else ProjectRow.deleted_at.is_(None)
+            ).order_by(ProjectRow.created_at.desc(), ProjectRow.id)
             projects = (await session.scalars(query)).all()
             result = []
             for project in projects:
@@ -201,8 +208,41 @@ def create_app(
                     "sample_count": count, "run_status": run.status if run else None,
                     "failed_chunks": run.failed_items if run else 0,
                     "run_id": str(run.id) if run else None,
+                    "deleted_at": project.deleted_at,
                 })
             return result
+
+    @app.delete("/api/projects/{project_id}")
+    async def trash_project(
+        project_id: UUID, request: Request,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+    ) -> dict:
+        async with factory() as session:
+            try:
+                await ProjectService(session).get_active(project_id)
+            except LookupError as exc:
+                raise api_error(exc) from exc
+            active = await session.scalar(select(PipelineRunRow.id).where(
+                PipelineRunRow.project_id == project_id,
+                PipelineRunRow.id.in_(request.app.state.active_run_ids),
+            ).limit(1)) if request.app.state.active_run_ids else None
+            if active:
+                raise HTTPException(status_code=409, detail="构建任务运行中，暂不能删除数据集")
+            await ProjectService(session).move_to_trash(project_id)
+            await session.commit()
+            return {"id": str(project_id), "deleted": True}
+
+    @app.post("/api/projects/{project_id}/restore")
+    async def restore_project(
+        project_id: UUID, factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)]
+    ) -> dict:
+        async with factory() as session:
+            try:
+                await ProjectService(session).restore(project_id)
+            except LookupError as exc:
+                raise api_error(exc) from exc
+            await session.commit()
+            return {"id": str(project_id), "deleted": False}
 
     @app.get("/api/models")
     async def list_models(factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)]) -> list[dict]:
@@ -221,6 +261,91 @@ def create_app(
             except ValueError as exc:
                 raise api_error(exc) from exc
 
+    @app.put("/api/models/{model_id}")
+    async def update_model(
+        model_id: UUID, payload: ModelConfigInput,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+    ) -> dict:
+        async with factory() as session:
+            try:
+                result = await ModelConfigService(session).update(model_id, payload)
+                await session.commit()
+                return result
+            except (ValueError, LookupError) as exc:
+                raise api_error(exc) from exc
+
+    @app.delete("/api/models/{model_id}", status_code=204)
+    async def archive_model(
+        model_id: UUID, factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)]
+    ) -> None:
+        async with factory() as session:
+            try:
+                await ModelConfigService(session).archive(model_id)
+                await session.commit()
+            except LookupError as exc:
+                raise api_error(exc) from exc
+
+    @app.get("/api/workspace/settings")
+    async def get_workspace_settings(
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)]
+    ) -> dict:
+        async with factory() as session:
+            return await WorkspaceService(session).settings()
+
+    @app.put("/api/workspace/settings")
+    async def update_workspace_settings(
+        payload: WorkspaceSettingsInput,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+    ) -> dict:
+        async with factory() as session:
+            try:
+                result = await WorkspaceService(session).save_settings(payload)
+                await session.commit()
+                return result
+            except ValueError as exc:
+                raise api_error(exc) from exc
+
+    @app.get("/api/prompts")
+    async def list_prompts(factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)]) -> list[dict]:
+        async with factory() as session:
+            return await WorkspaceService(session).list_prompts()
+
+    @app.post("/api/prompts", status_code=201)
+    async def create_prompt(
+        payload: PromptTemplateInput, factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)]
+    ) -> dict:
+        async with factory() as session:
+            try:
+                result = await WorkspaceService(session).create_prompt(payload)
+                await session.commit()
+                return result
+            except ValueError as exc:
+                raise api_error(exc) from exc
+
+    @app.put("/api/prompts/{prompt_id}")
+    async def update_prompt(
+        prompt_id: UUID, payload: PromptTemplateInput,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+    ) -> dict:
+        async with factory() as session:
+            try:
+                result = await WorkspaceService(session).update_prompt(prompt_id, payload)
+                await session.commit()
+                return result
+            except (ValueError, LookupError) as exc:
+                raise api_error(exc) from exc
+
+    @app.delete("/api/prompts/{prompt_id}", status_code=204)
+    async def delete_prompt(
+        prompt_id: UUID, factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)]
+    ) -> None:
+        async with factory() as session:
+            try:
+                await WorkspaceService(session).delete_prompt(prompt_id)
+                await session.commit()
+            except LookupError as exc:
+                raise api_error(exc) from exc
+
     @app.get("/api/prompt-presets")
     async def prompt_presets() -> dict[str, list[dict[str, str]]]:
         return list_prompt_presets()
@@ -236,16 +361,33 @@ def create_app(
         splitter: Annotated[str, Form()] = "auto",
         max_chars: Annotated[int, Form(ge=1)] = 1000,
         overlap: Annotated[int, Form(ge=0)] = 0,
-        parser_workers: Annotated[int, Form(ge=1, le=16)] = 1,
+        parser_workers: Annotated[int | None, Form(ge=1, le=16)] = None,
         content_field: Annotated[str | None, Form()] = None,
         content_columns: Annotated[str | None, Form()] = None,
         model_id: Annotated[UUID | None, Form()] = None,
         prompt_preset: Annotated[str, Form()] = "default",
         custom_prompt: Annotated[str | None, Form()] = None,
+        prompt_id: Annotated[str | None, Form()] = None,
     ) -> dict:
         filename = (file.filename or "").replace("\\", "/").split("/")[-1]
         if not filename or filename in {".", ".."}:
             raise HTTPException(status_code=422, detail="必须提供源文件名")
+        async with factory() as session:
+            workspace = WorkspaceService(session)
+            defaults = await workspace.settings()
+            if model_id is None and defaults["default_model_id"]:
+                model_id = UUID(str(defaults["default_model_id"]))
+            if model_id is not None:
+                try:
+                    await ModelConfigService(session).active_model(model_id)
+                except LookupError as exc:
+                    raise api_error(exc) from exc
+            parser_workers = parser_workers or int(defaults["parser_workers"])
+            if prompt_id:
+                try:
+                    prompt_preset, custom_prompt = await workspace.resolve_prompt(generator, prompt_id)
+                except ValueError as exc:
+                    raise api_error(exc) from exc
         client = await selected_client(factory, model_id, request.app.state.client_factory)
         temporary = TemporaryDirectory(prefix="dataset-builder-upload-")
         try:
@@ -279,6 +421,10 @@ def create_app(
         factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
     ) -> dict:
         async with factory() as session:
+            try:
+                await ProjectService(session).get_active(project_id)
+            except LookupError as exc:
+                raise api_error(exc) from exc
             run = await session.scalar(
                 select(PipelineRunRow).where(PipelineRunRow.project_id == project_id)
                 .order_by(PipelineRunRow.started_at.desc(), PipelineRunRow.id.desc()).limit(1)
@@ -313,6 +459,10 @@ def create_app(
             run = await session.get(PipelineRunRow, run_id)
             if run is None:
                 raise HTTPException(status_code=404, detail="构建任务不存在")
+            try:
+                await ProjectService(session).get_active(run.project_id)
+            except LookupError as exc:
+                raise api_error(exc) from exc
             interrupted = (
                 run.status in ACTIVE_STATUSES and run.configuration.get("entrypoint") == "web"
                 and run.id not in request.app.state.active_run_ids
@@ -347,8 +497,10 @@ def create_app(
         offset: Annotated[int, Query(ge=0)] = 0,
     ) -> list[dict]:
         async with factory() as session:
-            if await session.get(ProjectRow, project_id) is None:
-                raise HTTPException(status_code=404, detail="项目不存在")
+            try:
+                await ProjectService(session).get_active(project_id)
+            except LookupError as exc:
+                raise api_error(exc) from exc
             return await ReviewService(session).list_samples(project_id, limit, offset)
 
     @app.patch("/api/projects/{project_id}/samples/bulk")
@@ -357,8 +509,10 @@ def create_app(
         factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
     ) -> dict:
         async with factory() as session:
-            if await session.get(ProjectRow, project_id) is None:
-                raise HTTPException(status_code=404, detail="项目不存在")
+            try:
+                await ProjectService(session).get_active(project_id)
+            except LookupError as exc:
+                raise api_error(exc) from exc
             result = await ReviewService(session).bulk_action(project_id, payload.sample_ids, payload.action)
             await session.commit()
             return result
@@ -419,8 +573,10 @@ def create_app(
         directory: Annotated[Path, Depends(export_dir_for)],
     ) -> dict:
         async with factory() as session:
-            if await session.get(ProjectRow, project_id) is None:
-                raise HTTPException(status_code=404, detail="Project does not exist")
+            try:
+                await ProjectService(session).get_active(project_id)
+            except LookupError as exc:
+                raise api_error(exc) from exc
             destination = directory.resolve() / f"{project_id}-{uuid4()}.{payload.file_type.value}"
             try:
                 record = await SampleExportService(session).export(
@@ -441,10 +597,14 @@ def create_app(
         async with factory() as session:
             record = await session.get(ExportRecordRow, export_id)
             if record is None or record.status != "completed" or not record.file_path:
-                raise HTTPException(status_code=404, detail="Export does not exist")
+                raise HTTPException(status_code=404, detail="导出记录不存在")
+            try:
+                await ProjectService(session).get_active(record.project_id)
+            except LookupError as exc:
+                raise api_error(exc) from exc
             path = Path(record.file_path).resolve()
             if not path.is_relative_to(directory.resolve()) or not path.is_file():
-                raise HTTPException(status_code=404, detail="Export file is unavailable")
+                raise HTTPException(status_code=404, detail="导出文件不可用")
             return FileResponse(path, filename=f"dataset-{record.format}.{record.file_type}")
 
     return app

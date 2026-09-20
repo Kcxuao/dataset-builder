@@ -6,7 +6,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataset_builder.cleaners import BasicCleaner
-from dataset_builder.db.orm import ChunkRow, TrainingSampleRow, ValidationIssueRow
+from dataset_builder.db.orm import ChunkRow, ProjectRow, TrainingSampleRow, ValidationIssueRow
 from dataset_builder.models import Message, ReviewStatus, TrainingSample, utc_now
 from dataset_builder.validators import SampleValidator
 
@@ -20,6 +20,9 @@ class ReviewService:
     async def list_samples(self, project_id: UUID, limit: int = 50, offset: int = 0) -> list[dict[str, object]]:
         if limit < 1 or offset < 0:
             raise ValueError("limit must be positive and offset nonnegative")
+        project = await self.session.get(ProjectRow, project_id)
+        if project is None or project.deleted_at is not None:
+            raise LookupError("数据集不存在")
         rows = (await self.session.scalars(
             select(TrainingSampleRow)
             .where(TrainingSampleRow.project_id == project_id)
@@ -29,9 +32,7 @@ class ReviewService:
         return [await self._view(row) for row in rows]
 
     async def get_sample(self, sample_id: UUID) -> dict[str, object]:
-        row = await self.session.get(TrainingSampleRow, sample_id)
-        if row is None:
-            raise LookupError(f"Sample {sample_id} does not exist")
+        row = await self._row(sample_id)
         return await self._view(row)
 
     async def edit(self, sample_id: UUID, messages: list[Message]) -> dict[str, object]:
@@ -123,6 +124,9 @@ class ReviewService:
         row = await self.session.get(TrainingSampleRow, sample_id)
         if row is None:
             raise LookupError(f"Sample {sample_id} does not exist")
+        project = await self.session.get(ProjectRow, row.project_id)
+        if project is None or project.deleted_at is not None:
+            raise LookupError("数据集不存在")
         return row
 
     async def _view(self, row: TrainingSampleRow) -> dict[str, object]:
