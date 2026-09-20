@@ -17,3 +17,7 @@ uv run dataset-builder
 ```bash
 TEST_DATABASE_URL=postgresql+asyncpg://user:password@host:port/test_database uv run pytest tests/integration
 ```
+
+## LLM 配置
+
+QA Generator 使用 OpenAI Compatible Chat Completions API。`.env.example` 列出 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`、`LLM_TEMPERATURE`、`LLM_MAX_TOKENS`、`LLM_TIMEOUT`、`LLM_CONCURRENCY_LIMIT` 和 `LLM_MAX_RETRIES`。本地无需认证的兼容服务可以省略 API Key。当前尚未提供调用 Generator 的 CLI 命令。
