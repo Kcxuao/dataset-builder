@@ -11,6 +11,7 @@ const projects = inject('projects')
 const refreshProjects = inject('refreshProjects')
 const project = computed(() => projects.value.find(item => item.id === route.params.id))
 const run = ref(null)
+const quality = ref(null)
 const samples = ref([])
 const page = ref(1)
 const total = ref(0)
@@ -65,7 +66,11 @@ async function loadRun() {
     if (activeStatuses.has(run.value.status)) timer = setTimeout(loadRun, 1300)
   } catch (error) { notifyError(error, ElMessage) }
 }
-async function reload() { clearTimeout(timer); run.value = null; await refreshProjects(); await Promise.all([loadSamples(), loadRun()]) }
+async function loadQuality() {
+  try { quality.value = await api(`/api/projects/${route.params.id}/quality-summary`) }
+  catch (error) { notifyError(error, ElMessage) }
+}
+async function reload() { clearTimeout(timer); run.value = null; await refreshProjects(); await Promise.all([loadSamples(), loadRun(), loadQuality()]) }
 async function openDetail(item) {
   try { detail.value = await api(`/api/samples/${item.id}`); messages.value = detail.value.messages.map(message => ({ ...message })); drawer.value = true }
   catch (error) { notifyError(error, ElMessage) }
@@ -134,6 +139,11 @@ onUnmounted(() => clearTimeout(timer))
     <el-alert v-if="run?.error_message" :title="run.error_message" type="error" :closable="false" show-icon class="run-alert" />
     <el-alert v-if="run?.status === 'interrupted'" title="任务曾中断，可重试剩余内容块；切分前中断需要重新上传。" type="warning" :closable="false" show-icon class="run-alert" />
     <div v-if="run?.failed_chunks?.length" class="failed-chunks"><p v-for="chunk in run.failed_chunks" :key="chunk.id">内容块 {{ chunk.id.slice(0, 8) }}：{{ chunk.error }}</p></div>
+  </section>
+  <section v-if="quality" class="section-card quality-card">
+    <div class="section-heading"><div><h2>数据概览</h2><span class="section-subtitle">{{ quality.scope }}</span></div><el-button text type="primary" @click="loadQuality">更新统计</el-button></div>
+    <div class="quality-metrics"><div><span>当前可导出</span><strong>{{ quality.exportable_count }}</strong><small>已审核且校验通过</small></div><div><span>生成成功</span><strong>{{ quality.chunks.success }}</strong><small>失败 {{ quality.chunks.failed }} 个内容块</small></div><div><span>校验失败</span><strong>{{ quality.validations.failed || 0 }}</strong><small>待审核 {{ quality.reviews.pending || 0 }} 条</small></div><div><span>精确重复</span><strong>{{ quality.duplicates }}</strong><small>规范化内容哈希重复</small></div></div>
+    <div class="quality-grid"><div class="quality-panel"><h3>常见校验问题</h3><el-empty v-if="!quality.issues.length" description="没有校验问题" :image-size="48" /><div v-else class="quality-list"><div v-for="issue in quality.issues" :key="issue.rule"><span>{{ issue.rule }}</span><b>{{ issue.count }}</b></div></div></div><div class="quality-panel"><h3>消息长度分布</h3><div class="length-bars"><div v-for="(count, label) in quality.message_lengths" :key="label"><span>{{ label }}</span><i><b :style="{ width: `${Math.min(100, count * 12)}%` }" /></i><em>{{ count }}</em></div></div></div><div class="quality-panel"><h3>来源文档占比</h3><div class="quality-list"><div v-for="source in quality.sources.slice(0, 5)" :key="source.name"><span>{{ source.name }}</span><b>{{ source.count }}</b></div></div></div></div>
   </section>
   <section class="section-card review-card">
     <div class="section-heading review-heading"><div><h2>样本审核</h2><span class="section-subtitle">{{ total }} 条可审核样本；已替代版本默认隐藏</span></div></div>

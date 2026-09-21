@@ -26,6 +26,7 @@ from dataset_builder.application.model_discovery import (
     list_model_providers,
 )
 from dataset_builder.application.projects import ProjectService
+from dataset_builder.application.quality import QualitySummaryService
 from dataset_builder.application.review import ReviewService
 from dataset_builder.application.workspace import PromptTemplateInput, WorkspaceService, WorkspaceSettingsInput
 from dataset_builder.config import LLMSettings, Settings
@@ -753,6 +754,16 @@ def create_app(
             except LookupError as exc:
                 raise api_error(exc) from exc
             return await ReviewService(session).list_samples(project_id, limit, offset)
+
+    @app.get("/api/projects/{project_id}/quality-summary")
+    async def quality_summary(
+        project_id: UUID, factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)]
+    ) -> dict:
+        async with factory() as session:
+            try:
+                return await QualitySummaryService(session).summary(project_id)
+            except LookupError as exc:
+                raise api_error(exc) from exc
 
     @app.get("/api/projects/{project_id}/samples/search")
     async def search_samples(
