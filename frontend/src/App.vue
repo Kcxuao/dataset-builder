@@ -55,29 +55,47 @@ onMounted(() => loadProjects({ initial: true }))
         <span class="brand-symbol">D<span class="brand-spark">✦</span></span>
         <span><strong>Dataset Builder</strong><small>训练数据工作台</small></span>
       </button>
-      <button ref="mobileMenuClose" class="mobile-menu-close" type="button" aria-label="关闭菜单" @click="closeMobileMenu">关闭</button>
+      <button ref="mobileMenuClose" class="mobile-menu-close" type="button" aria-label="关闭菜单"
+        @click="closeMobileMenu">关闭</button>
       <div class="nav-caption">工作空间</div>
       <nav class="main-nav" aria-label="工作空间导航">
-        <button :class="{ active: route.path === '/' }" @click="navigate('/')"><el-icon><DataAnalysis /></el-icon>总览</button>
-        <button :class="{ active: route.path === '/create' }" @click="navigate('/create')"><el-icon><Plus /></el-icon>新建数据集</button>
+        <button :class="{ active: route.path === '/' }" @click="navigate('/')"><el-icon>
+            <DataAnalysis />
+          </el-icon>总览</button>
+        <button :class="{ active: route.path === '/create' }" @click="navigate('/create')"><el-icon>
+            <Plus />
+          </el-icon>新建数据集</button>
       </nav>
       <div class="nav-caption nav-caption-projects">数据集 <span>{{ projects.length }}</span></div>
       <div class="project-nav" :aria-busy="busy">
         <div v-if="busy && !projects.length" class="nav-skeleton" aria-label="正在加载数据集">
           <span v-for="index in 3" :key="index"><i /><b /></span>
         </div>
-        <button v-for="project in projects" :key="project.id" :class="{ active: route.path === `/projects/${project.id}` }" @click="navigate(`/projects/${project.id}`)">
-          <el-icon><Collection /></el-icon><span>{{ project.name }}</span><el-icon class="nav-arrow"><ArrowRight /></el-icon>
+        <button v-for="project in projects" :key="project.id"
+          :class="{ active: route.path === `/projects/${project.id}` }" @click="navigate(`/projects/${project.id}`)">
+          <el-icon>
+            <Collection />
+          </el-icon><span>{{ project.name }}</span><el-icon class="nav-arrow">
+            <ArrowRight />
+          </el-icon>
         </button>
         <p v-if="!projects.length && !busy" class="nav-empty">还没有数据集</p>
       </div>
       <div class="sidebar-footer">
         <div class="nav-caption">配置与管理</div>
         <nav class="main-nav" aria-label="配置导航">
-          <button :class="{ active: route.path === '/models' }" @click="navigate('/models')"><el-icon><Setting /></el-icon>模型配置</button>
-          <button :class="{ active: route.path === '/prompts' }" @click="navigate('/prompts')"><el-icon><Tickets /></el-icon>提示词配置</button>
-          <button :class="{ active: route.path === '/settings' }" @click="navigate('/settings')"><el-icon><Setting /></el-icon>处理设置</button>
-          <button :class="{ active: route.path === '/trash' }" @click="navigate('/trash')"><el-icon><Delete /></el-icon>回收站</button>
+          <button :class="{ active: route.path === '/models' }" @click="navigate('/models')"><el-icon>
+              <Setting />
+            </el-icon>模型配置</button>
+          <button :class="{ active: route.path === '/prompts' }" @click="navigate('/prompts')"><el-icon>
+              <Tickets />
+            </el-icon>提示词配置</button>
+          <button :class="{ active: route.path === '/settings' }" @click="navigate('/settings')"><el-icon>
+              <Setting />
+            </el-icon>处理设置</button>
+          <button :class="{ active: route.path === '/trash' }" @click="navigate('/trash')"><el-icon>
+              <Delete />
+            </el-icon>回收站</button>
         </nav>
         <div class="sidebar-credit"><span class="status-dot"></span> 本地工作区</div>
       </div>
@@ -85,12 +103,21 @@ onMounted(() => loadProjects({ initial: true }))
     <div v-if="mobileMenu" class="mobile-backdrop" @click="closeMobileMenu"></div>
     <div class="main-area">
       <header class="topbar">
-        <button ref="mobileMenuButton" class="mobile-menu-button" type="button" aria-label="打开菜单" aria-controls="workspace-sidebar" :aria-expanded="mobileMenu" @click="openMobileMenu"><el-icon><Menu /></el-icon></button>
+        <button ref="mobileMenuButton" class="mobile-menu-button" type="button" aria-label="打开菜单"
+          aria-controls="workspace-sidebar" :aria-expanded="mobileMenu" @click="openMobileMenu"><el-icon>
+            <Menu />
+          </el-icon></button>
         <div class="breadcrumbs">工作空间 <span>/</span> {{ heading[0] }}</div>
-        <div class="topbar-right"><el-button type="primary" :icon="Plus" aria-label="新建数据集" @click="navigate('/create')">新建数据集</el-button></div>
+        <div class="topbar-right"><el-button type="primary" :icon="Plus" aria-label="新建数据集"
+            @click="navigate('/create')">新建数据集</el-button></div>
       </header>
       <main class="content">
-        <div class="page-intro"><div><h1>{{ heading[0] }}</h1><p>{{ heading[1] }}</p></div></div>
+        <div class="page-intro">
+          <div>
+            <h1>{{ heading[0] }}</h1>
+            <p>{{ heading[1] }}</p>
+          </div>
+        </div>
         <router-view />
       </main>
     </div>

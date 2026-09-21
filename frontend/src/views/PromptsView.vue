@@ -27,9 +27,41 @@ onMounted(load)
 </script>
 
 <template>
-  <section class="section-card"><div class="section-heading"><div><h2>提示词模板</h2><span class="section-subtitle">选择内置预设，或保存自己的生成规则</span></div><el-button type="primary" :icon="Plus" @click="openForm()">新增模板</el-button></div>
-    <el-segmented v-model="mode" :options="[{ label: '问答生成', value: 'qa' }, { label: '指令生成', value: 'instruction' }, { label: '数据扩增', value: 'augmentation' }, { label: '答案升级', value: 'distillation' }]" class="prompt-segment" />
-    <div class="prompt-grid"><div v-for="prompt in visible" :key="prompt.id" class="prompt-card"><div class="prompt-card-top"><span class="prompt-mark">“</span><div class="prompt-tags"><el-tag :type="prompt.builtin ? 'info' : 'primary'" effect="light" round>{{ prompt.builtin ? '内置预设' : '自定义' }}</el-tag><el-tag :type="prompt.multi_turn ? 'success' : 'info'" effect="plain" round>{{ prompt.multi_turn ? '多轮对话' : '单轮问答' }}</el-tag></div></div><h3>{{ prompt.name }}</h3><p>{{ prompt.instruction }}</p><div v-if="!prompt.builtin" class="prompt-actions"><el-button text :icon="EditPen" @click="openForm(prompt)">编辑</el-button><el-button text type="danger" :icon="Delete" @click="remove(prompt)">删除</el-button></div></div></div>
+  <section class="section-card">
+    <div class="section-heading">
+      <div>
+        <h2>提示词模板</h2><span class="section-subtitle">选择内置预设，或保存自己的生成规则</span>
+      </div><el-button type="primary" :icon="Plus" @click="openForm()">新增模板</el-button>
+    </div>
+    <el-segmented v-model="mode"
+      :options="[{ label: '问答生成', value: 'qa' }, { label: '指令生成', value: 'instruction' }, { label: '数据扩增', value: 'augmentation' }, { label: '答案升级', value: 'distillation' }]"
+      class="prompt-segment" />
+    <div class="prompt-grid">
+      <div v-for="prompt in visible" :key="prompt.id" class="prompt-card">
+        <div class="prompt-card-top"><span class="prompt-mark">“</span>
+          <div class="prompt-tags"><el-tag :type="prompt.builtin ? 'info' : 'primary'" effect="light" round>{{
+            prompt.builtin ? '内置预设' : '自定义' }}</el-tag><el-tag :type="prompt.multi_turn ? 'success' : 'info'"
+              effect="plain" round>{{ prompt.multi_turn ? '多轮对话' : '单轮问答' }}</el-tag></div>
+        </div>
+        <h3>{{ prompt.name }}</h3>
+        <p>{{ prompt.instruction }}</p>
+        <div v-if="!prompt.builtin" class="prompt-actions"><el-button text :icon="EditPen"
+            @click="openForm(prompt)">编辑</el-button><el-button text type="danger" :icon="Delete"
+            @click="remove(prompt)">删除</el-button></div>
+      </div>
+    </div>
   </section>
-  <el-dialog v-model="dialog" :title="editing ? '编辑提示词' : '新增提示词'" width="min(620px, 94vw)" destroy-on-close><el-form label-position="top"><el-form-item label="模板名称" required><el-input v-model="form.name" /></el-form-item><el-form-item label="生成方式"><el-select v-model="form.mode"><el-option label="问答生成" value="qa" /><el-option label="指令生成" value="instruction" /><el-option label="数据扩增" value="augmentation" /><el-option label="教师答案升级" value="distillation" /></el-select></el-form-item><el-form-item v-if="form.mode !== 'distillation'" label="对话结构"><el-switch v-model="form.multi_turn" inline-prompt active-text="多轮" inactive-text="单轮" /><p class="field-hint">多轮会把完整上下文保存为一条样本；构建时仍可临时覆盖。</p></el-form-item><el-form-item label="提示词内容" required><el-input v-model="form.instruction" type="textarea" :rows="7" /></el-form-item><p class="field-hint">系统会自动附加与所选任务一致的结构化输出协议与事实约束。</p></el-form><template #footer><el-button @click="dialog = false">取消</el-button><el-button type="primary" :loading="saving" @click="save">保存模板</el-button></template></el-dialog>
+  <el-dialog v-model="dialog" :title="editing ? '编辑提示词' : '新增提示词'" width="min(620px, 94vw)" destroy-on-close><el-form
+      label-position="top"><el-form-item label="模板名称" required><el-input
+          v-model="form.name" /></el-form-item><el-form-item label="生成方式"><el-select v-model="form.mode"><el-option
+            label="问答生成" value="qa" /><el-option label="指令生成" value="instruction" /><el-option label="数据扩增"
+            value="augmentation" /><el-option label="教师答案升级"
+            value="distillation" /></el-select></el-form-item><el-form-item v-if="form.mode !== 'distillation'"
+        label="对话结构"><el-switch v-model="form.multi_turn" inline-prompt active-text="多轮" inactive-text="单轮" />
+        <p class="field-hint">多轮会把完整上下文保存为一条样本；构建时仍可临时覆盖。</p>
+      </el-form-item><el-form-item label="提示词内容" required><el-input v-model="form.instruction" type="textarea"
+          :rows="7" /></el-form-item>
+      <p class="field-hint">系统会自动附加与所选任务一致的结构化输出协议与事实约束。</p>
+    </el-form><template #footer><el-button @click="dialog = false">取消</el-button><el-button type="primary"
+        :loading="saving" @click="save">保存模板</el-button></template></el-dialog>
 </template>
