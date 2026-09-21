@@ -6,7 +6,7 @@
 
 它不是单纯的 Alpaca/ShareGPT JSON 转换器，而是完整的 Dataset Builder。
 
-一句话概括：使用 Python、uv 和 PostgreSQL 开发一个轻量、模块化、可扩展的 LLM Dataset Builder，把各种原始数据自动处理成 Alpaca、ShareGPT 等可直接训练的结构化数据集。
+一句话概括：使用 Python、uv、PostgreSQL 或本地 SQLite 开发一个轻量、模块化、可扩展的 LLM Dataset Builder，把各种原始数据自动处理成 Alpaca、ShareGPT 等可直接训练的结构化数据集。
 
 ## 2. 目标用户
 

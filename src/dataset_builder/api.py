@@ -230,7 +230,8 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if sessions is None:
             settings = Settings()
-            engine = create_engine(settings.database_url)
+            engine = create_engine(settings.resolved_database_url)
+            app.state.database_provider = settings.database_provider
             app.state.sessions = create_session_factory(engine)
             if export_dir is None:
                 app.state.export_dir = settings.export_dir
@@ -244,6 +245,7 @@ def create_app(
 
     app = FastAPI(title="Dataset Builder", lifespan=lifespan)
     app.state.active_run_ids = set()
+    app.state.database_provider = "postgresql"
     app.state.client_factory = client_factory
     app.state.model_catalog_factory = model_catalog_factory
     project_logger = logging.getLogger("dataset_builder")
@@ -262,6 +264,15 @@ def create_app(
     @app.get("/", include_in_schema=False)
     async def index() -> FileResponse:
         return FileResponse(web_dir / "index.html")
+
+    @app.get("/api/system/database")
+    async def database_status(request: Request) -> dict[str, str]:
+        provider = request.app.state.database_provider
+        return {
+            "provider": provider,
+            "label": "本地 SQLite" if provider == "sqlite" else "PostgreSQL",
+            "scope": "单机单服务进程" if provider == "sqlite" else "标准部署",
+        }
 
     @app.get("/api/projects")
     async def list_projects(

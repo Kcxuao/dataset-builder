@@ -64,7 +64,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 async def run(args: argparse.Namespace) -> object:
-    engine = create_engine(Settings().database_url)
+    engine = create_engine(Settings().resolved_database_url)
     sessions = create_session_factory(engine)
     try:
         if args.command in {"build", "retry"}:

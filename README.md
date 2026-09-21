@@ -2,9 +2,13 @@
 
 LLM 训练数据集构建工具，可通过 CLI 或 Web 工作台完成 TXT、Markdown、JSON、JSONL、CSV 的构建、审核和导出流程。
 
-## PostgreSQL 配置
+## 数据库配置
 
-使用 Python 3.12+ 和 uv。复制 `.env.example` 为 `.env`，设置指向 PostgreSQL 的 `DATABASE_URL`，格式为 `postgresql+asyncpg://user:password@host:port/database`。不要提交 `.env`。
+使用 Python 3.12+ 和 uv。复制 `.env.example` 为 `.env`，不要提交 `.env`。
+
+- 标准部署使用 `DATABASE_PROVIDER=postgresql` 和 `DATABASE_URL=postgresql+asyncpg://user:password@host:port/database`。
+- 本地单机使用 `DATABASE_PROVIDER=sqlite` 与可选的 `SQLITE_PATH=./dataset-builder.sqlite3`；SQLite 会开启外键、WAL 和写入等待，但不支持多服务进程同时写入。
+- 切换后端不会迁移已有数据；请通过导出和导入迁移数据。修改后端后重启服务，再执行迁移。
 
 ```bash
 uv sync

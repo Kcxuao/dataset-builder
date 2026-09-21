@@ -3,13 +3,16 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
     pass
+
+
+JSON_TYPE = JSON().with_variant(JSONB, "postgresql")
 
 
 class ProjectRow(Base):
@@ -24,7 +27,13 @@ class ProjectRow(Base):
 class ModelConfigRow(Base):
     __tablename__ = "model_configs"
     __table_args__ = (
-        Index("uq_model_configs_active_name", "name", unique=True, postgresql_where="archived_at IS NULL"),
+        Index(
+            "uq_model_configs_active_name",
+            "name",
+            unique=True,
+            postgresql_where=text("archived_at IS NULL"),
+            sqlite_where=text("archived_at IS NULL"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -70,7 +79,7 @@ class SourceDocumentRow(Base):
     source_name: Mapped[str] = mapped_column(String(255))
     source_type: Mapped[str] = mapped_column(String(32))
     content: Mapped[str] = mapped_column(Text)
-    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+    metadata_: Mapped[dict] = mapped_column("metadata", JSON_TYPE, default=dict)
     parse_status: Mapped[str] = mapped_column(String(32), default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -83,7 +92,7 @@ class ChunkRow(Base):
     index: Mapped[int] = mapped_column(Integer)
     content: Mapped[str] = mapped_column(Text)
     content_hash: Mapped[str | None] = mapped_column(String(64))
-    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+    metadata_: Mapped[dict] = mapped_column("metadata", JSON_TYPE, default=dict)
     generation_status: Mapped[str] = mapped_column(String(32), default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -109,8 +118,8 @@ class TrainingSampleRow(Base):
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"))
     document_id: Mapped[UUID] = mapped_column(ForeignKey("source_documents.id"), index=True)
     chunk_id: Mapped[UUID] = mapped_column(ForeignKey("chunks.id"), index=True)
-    messages: Mapped[list] = mapped_column(JSONB)
-    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+    messages: Mapped[list] = mapped_column(JSON_TYPE)
+    metadata_: Mapped[dict] = mapped_column("metadata", JSON_TYPE, default=dict)
     content_hash: Mapped[str | None] = mapped_column(String(64))
     review_status: Mapped[str] = mapped_column(String(32), default="pending")
     validation_status: Mapped[str] = mapped_column(String(32), default="pending")
@@ -142,7 +151,7 @@ class PipelineRunRow(Base):
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), index=True)
     status: Mapped[str] = mapped_column(String(32), default="created")
     current_stage: Mapped[str | None] = mapped_column(String(32))
-    configuration: Mapped[dict] = mapped_column(JSONB, default=dict)
+    configuration: Mapped[dict] = mapped_column(JSON_TYPE, default=dict)
     total_items: Mapped[int] = mapped_column(Integer, default=0)
     completed_items: Mapped[int] = mapped_column(Integer, default=0)
     failed_items: Mapped[int] = mapped_column(Integer, default=0)

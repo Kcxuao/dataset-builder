@@ -20,7 +20,7 @@ Formatter → Exporter
 JSON / JSONL
 ```
 
-PostgreSQL 用于保存项目、源文档、Chunk、训练样本、校验问题、Pipeline 状态和导出记录。原始上传文件和导出文件可以存放在文件系统，数据库保存路径、元数据和状态。
+PostgreSQL 或本地 SQLite 用于保存项目、源文档、Chunk、训练样本、校验问题、Pipeline 状态和导出记录。SQLite 是单机单服务进程模式，启用外键、WAL 与写入等待；PostgreSQL 用于标准部署。原始上传文件和导出文件可以存放在文件系统，数据库保存路径、元数据和状态。
 
 ## 2. 推荐目录结构
 

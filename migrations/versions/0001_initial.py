@@ -1,4 +1,4 @@
-"""Initial PostgreSQL schema.
+"""Initial schema for PostgreSQL and SQLite.
 
 Revision ID: 0001
 Revises:
@@ -7,6 +7,8 @@ Revises:
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
+
+JSON_TYPE = sa.JSON().with_variant(postgresql.JSONB(), "postgresql")
 
 revision = "0001"
 down_revision = None
@@ -28,7 +30,7 @@ def upgrade() -> None:
         sa.Column("source_name", sa.String(255), nullable=False),
         sa.Column("source_type", sa.String(32), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
-        sa.Column("metadata", postgresql.JSONB(), nullable=False),
+        sa.Column("metadata", JSON_TYPE, nullable=False),
         sa.Column("parse_status", sa.String(32), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     )
@@ -40,7 +42,7 @@ def upgrade() -> None:
         sa.Column("index", sa.Integer(), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
         sa.Column("content_hash", sa.String(64)),
-        sa.Column("metadata", postgresql.JSONB(), nullable=False),
+        sa.Column("metadata", JSON_TYPE, nullable=False),
         sa.Column("generation_status", sa.String(32), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     )
@@ -51,8 +53,8 @@ def upgrade() -> None:
         sa.Column("project_id", sa.Uuid(), sa.ForeignKey("projects.id"), nullable=False),
         sa.Column("document_id", sa.Uuid(), sa.ForeignKey("source_documents.id"), nullable=False),
         sa.Column("chunk_id", sa.Uuid(), sa.ForeignKey("chunks.id"), nullable=False),
-        sa.Column("messages", postgresql.JSONB(), nullable=False),
-        sa.Column("metadata", postgresql.JSONB(), nullable=False),
+        sa.Column("messages", JSON_TYPE, nullable=False),
+        sa.Column("metadata", JSON_TYPE, nullable=False),
         sa.Column("content_hash", sa.String(64)),
         sa.Column("review_status", sa.String(32), nullable=False),
         sa.Column("validation_status", sa.String(32), nullable=False),
@@ -84,7 +86,7 @@ def upgrade() -> None:
         sa.Column("project_id", sa.Uuid(), sa.ForeignKey("projects.id"), nullable=False),
         sa.Column("status", sa.String(32), nullable=False),
         sa.Column("current_stage", sa.String(32)),
-        sa.Column("configuration", postgresql.JSONB(), nullable=False),
+        sa.Column("configuration", JSON_TYPE, nullable=False),
         sa.Column("total_items", sa.Integer(), nullable=False),
         sa.Column("completed_items", sa.Integer(), nullable=False),
         sa.Column("failed_items", sa.Integer(), nullable=False),

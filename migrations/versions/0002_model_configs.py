@@ -17,7 +17,8 @@ def upgrade() -> None:
     op.create_table(
         "model_configs",
         sa.Column("id", sa.Uuid(), primary_key=True),
-        sa.Column("name", sa.String(255), nullable=False, unique=True),
+        sa.Column("name", sa.String(255), nullable=False),
+        sa.UniqueConstraint("name", name="model_configs_name_key"),
         sa.Column("base_url", sa.Text(), nullable=False),
         sa.Column("api_key", sa.Text()),
         sa.Column("model", sa.String(255), nullable=False),
