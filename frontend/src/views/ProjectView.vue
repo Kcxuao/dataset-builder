@@ -57,6 +57,11 @@ const versions = ref([])
 const versionForm = reactive({ name: '', description: '' })
 const versionCompare = reactive({ base_id: '', target_id: '' })
 const versionDiff = ref(null)
+const trainingPackageDialog = ref(false)
+const trainingPackageLoading = ref(false)
+const trainingPackageVersion = ref(null)
+const trainingPackageForm = reactive({ model_name_or_path: '', template: 'qwen', finetuning_type: 'lora', cutoff_len: 2048, num_train_epochs: 3, learning_rate: 0.00005, per_device_train_batch_size: 2, gradient_accumulation_steps: 8, output_dir_name: 'sft-output' })
+const templatePresets = ['qwen', 'llama3', 'deepseek', 'chatml', 'gemma', 'mistral']
 let timer = null
 const activeStatuses = new Set(['created', 'importing', 'parsing', 'splitting', 'generating', 'augmenting', 'distilling', 'cleaning', 'validating'])
 const statusNames = { created: '任务已创建', importing: '正在导入', parsing: '正在解析', splitting: '正在切分', generating: '正在生成', augmenting: '正在扩增', distilling: '正在蒸馏', cleaning: '正在清洗', validating: '正在校验', ready_for_review: '等待审核', completed: '处理完成', failed: '构建失败', interrupted: '任务已中断' }
@@ -298,6 +303,27 @@ async function exportVersion(version) {
   } catch (error) { notifyError(error, ElMessage) }
   finally { versionLoading.value = false }
 }
+function openTrainingPackage(version) {
+  trainingPackageVersion.value = version
+  trainingPackageForm.output_dir_name = `${version.name.replace(/[^A-Za-z0-9._-]/g, '-').replace(/^-+/, '') || 'sft'}-output`.slice(0, 100)
+  trainingPackageDialog.value = true
+}
+async function buildTrainingPackage() {
+  if (!trainingPackageVersion.value || !trainingPackageForm.model_name_or_path.trim()) return
+  trainingPackageLoading.value = true
+  try {
+    const response = await api(`/api/versions/${trainingPackageVersion.value.id}/training-packages/llamafactory`, jsonOptions('POST', trainingPackageForm))
+    const blobUrl = URL.createObjectURL(await response.blob())
+    const anchor = document.createElement('a')
+    anchor.href = blobUrl
+    anchor.download = `llamafactory-${trainingPackageVersion.value.name}.zip`
+    anchor.click()
+    URL.revokeObjectURL(blobUrl)
+    ElMessage.success(`训练包已生成，共 ${response.headers.get('X-Sample-Count') || trainingPackageVersion.value.sample_count} 条样本`)
+    trainingPackageDialog.value = false
+  } catch (error) { notifyError(error, ElMessage) }
+  finally { trainingPackageLoading.value = false }
+}
 async function previewAugmentation() {
   augmentationLoading.value = true
   try { augmentationPreview.value = await api(`/api/projects/${route.params.id}/augmentations/preview`, jsonOptions('POST', augmentationPayload())); }
@@ -419,10 +445,21 @@ onUnmounted(() => clearTimeout(timer))
     <template #header><div class="preview-dialog-title"><strong>数据集版本</strong><span>把当前可导出样本冻结为不可变快照，用同一份内容重复导出。</span></div></template>
     <div v-loading="versionLoading" class="version-workbench">
       <aside class="version-create"><h3>创建发布快照</h3><p>只收录当前审核通过、校验通过、未删除且未替代的样本。</p><el-input v-model="versionForm.name" maxlength="100" placeholder="版本名称，例如 v1.0" /><el-input v-model="versionForm.description" type="textarea" :rows="3" maxlength="1000" placeholder="说明本次数据变化（可选）" /><el-button type="primary" :disabled="!versionForm.name.trim()" @click="createVersion">冻结当前版本</el-button><div class="version-export-format"><span>版本导出格式</span><el-select v-model="exportForm.format"><el-option label="ShareGPT" value="sharegpt" /><el-option label="Alpaca" value="alpaca" /></el-select><el-select v-model="exportForm.file_type"><el-option label="JSONL" value="jsonl" /><el-option label="JSON" value="json" /></el-select></div></aside>
-      <main class="version-history"><el-empty v-if="!versions.length" description="还没有版本，先冻结当前数据集" :image-size="64" /><div v-else class="version-list"><article v-for="version in versions" :key="version.id"><i /><div><div class="version-name"><strong>{{ version.name }}</strong><span>{{ version.sample_count }} 条</span></div><p>{{ version.description || '未填写版本说明' }}</p><small>{{ formatVersionDate(version.created_at) }} · 原始 {{ version.statistics?.origins?.original || 0 }} / 扩增 {{ version.statistics?.origins?.augmentation || 0 }} / 蒸馏 {{ version.statistics?.origins?.distillation || 0 }}</small></div><el-button text type="primary" @click="exportVersion(version)">导出</el-button></article></div>
+      <main class="version-history"><el-empty v-if="!versions.length" description="还没有版本，先冻结当前数据集" :image-size="64" /><div v-else class="version-list"><article v-for="version in versions" :key="version.id"><i /><div><div class="version-name"><strong>{{ version.name }}</strong><span>{{ version.sample_count }} 条</span></div><p>{{ version.description || '未填写版本说明' }}</p><small>{{ formatVersionDate(version.created_at) }} · 原始 {{ version.statistics?.origins?.original || 0 }} / 扩增 {{ version.statistics?.origins?.augmentation || 0 }} / 蒸馏 {{ version.statistics?.origins?.distillation || 0 }}</small></div><div class="version-actions"><el-button text @click="exportVersion(version)">导出</el-button><el-button text type="primary" @click="openTrainingPackage(version)">训练包</el-button></div></article></div>
         <section v-if="versions.length > 1" class="version-compare"><header><div><h3>比较版本</h3><p>查看两个不可变快照之间的数据变化。</p></div><el-button :disabled="!versionCompare.base_id || !versionCompare.target_id || versionCompare.base_id === versionCompare.target_id" @click="compareVersions">开始比较</el-button></header><div class="version-selectors"><el-select v-model="versionCompare.base_id" placeholder="基准版本"><el-option v-for="version in versions" :key="version.id" :label="version.name" :value="version.id" /></el-select><span>对比</span><el-select v-model="versionCompare.target_id" placeholder="目标版本"><el-option v-for="version in versions" :key="version.id" :label="version.name" :value="version.id" /></el-select></div><div v-if="versionDiff" class="version-diff"><div><strong>+{{ versionDiff.counts.added }}</strong><span>新增</span></div><div><strong>−{{ versionDiff.counts.removed }}</strong><span>移除</span></div><div><strong>{{ versionDiff.counts.changed }}</strong><span>内容变化</span></div><div><strong>{{ versionDiff.counts.replaced }}</strong><span>蒸馏替代</span></div></div></section>
       </main>
     </div>
+  </el-dialog>
+  <el-dialog v-model="trainingPackageDialog" class="training-package-dialog" width="min(980px, calc(100% - 28px))" destroy-on-close>
+    <template #header><div class="preview-dialog-title"><strong>生成 LLaMA-Factory 训练包</strong><span>从不可变版本生成可迁移 ZIP；只打包数据和配置，不连接训练服务器。</span></div></template>
+    <div class="training-package-layout">
+      <main class="training-package-form">
+        <section><div class="package-section-title"><span>01</span><div><h3>模型与适配</h3><p>这些值会写入 train_sft.yaml，下载后仍可修改。</p></div></div><div class="package-fields"><label class="field-wide"><span>基础模型名称或路径</span><el-input v-model="trainingPackageForm.model_name_or_path" maxlength="500" placeholder="例如 Qwen/Qwen2.5-7B-Instruct" /></label><label><span>模型模板</span><el-select v-model="trainingPackageForm.template" filterable allow-create default-first-option><el-option v-for="item in templatePresets" :key="item" :label="item" :value="item" /></el-select></label><label><span>微调方式</span><el-segmented v-model="trainingPackageForm.finetuning_type" :options="[{ label: 'LoRA', value: 'lora' }, { label: '全量微调', value: 'full' }]" /></label></div></section>
+        <section><div class="package-section-title"><span>02</span><div><h3>训练参数</h3><p>提供稳定的 SFT 基础配置，不预设显卡精度和量化方式。</p></div></div><div class="package-fields parameter-fields"><label><span>截断长度</span><el-input-number v-model="trainingPackageForm.cutoff_len" :min="128" :max="131072" :step="128" controls-position="right" /></label><label><span>训练轮数</span><el-input-number v-model="trainingPackageForm.num_train_epochs" :min="0.1" :max="100" :step="0.5" controls-position="right" /></label><label><span>学习率</span><el-input-number v-model="trainingPackageForm.learning_rate" :min="0.00000001" :max="1" :step="0.00001" :precision="8" controls-position="right" /></label><label><span>单设备批次</span><el-input-number v-model="trainingPackageForm.per_device_train_batch_size" :min="1" :max="1024" controls-position="right" /></label><label><span>梯度累积</span><el-input-number v-model="trainingPackageForm.gradient_accumulation_steps" :min="1" :max="1024" controls-position="right" /></label><label><span>输出目录名</span><el-input v-model="trainingPackageForm.output_dir_name" maxlength="100" /></label></div></section>
+      </main>
+      <aside class="training-package-summary"><div class="package-kicker">PACKAGE READY</div><h3>{{ trainingPackageVersion?.name }}</h3><strong>{{ trainingPackageVersion?.sample_count || 0 }}</strong><span>条冻结样本</span><ol><li><b>01</b><span>ShareGPT JSONL<small>保留多轮消息结构</small></span></li><li><b>02</b><span>训练配置<small>模型、模板与 SFT 参数</small></span></li><li><b>03</b><span>清单与说明<small>版本血缘和运行命令</small></span></li></ol><p>压缩包不包含模型权重、API Key 或训练框架程序。</p></aside>
+    </div>
+    <template #footer><div class="training-package-footer"><span>ZIP 内含 data/、train_sft.yaml、manifest.json 与 README.md</span><div><el-button @click="trainingPackageDialog = false">取消</el-button><el-button type="primary" :icon="Download" :loading="trainingPackageLoading" :disabled="!trainingPackageForm.model_name_or_path.trim()" @click="buildTrainingPackage">生成并下载</el-button></div></div></template>
   </el-dialog>
   <el-drawer v-model="drawer" :title="`样本 #${detail?.id?.slice(0, 8) || ''}`" size="min(680px, 100%)" class="sample-drawer">
     <template v-if="detail"><div class="drawer-status"><el-tag :type="sampleStatus(detail)[1]" round>{{ sampleStatus(detail)[0] }}</el-tag><span>来源内容块 #{{ detail.chunk_id.slice(0, 8) }}</span><span v-if="detail.parent_sample_id">扩增自样本 #{{ detail.parent_sample_id.slice(0, 8) }}</span></div>

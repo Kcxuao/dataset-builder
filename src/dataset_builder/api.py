@@ -31,6 +31,7 @@ from dataset_builder.application.projects import ProjectService
 from dataset_builder.application.quality import QualitySummaryService
 from dataset_builder.application.review import ReviewService
 from dataset_builder.application.training_import import TrainingImportService
+from dataset_builder.application.training_packages import TrainingPackageService
 from dataset_builder.application.versions import DatasetVersionService
 from dataset_builder.application.workspace import PromptTemplateInput, WorkspaceService, WorkspaceSettingsInput
 from dataset_builder.config import LLMSettings, Settings
@@ -49,6 +50,7 @@ from dataset_builder.exporters.service import SampleExportService
 from dataset_builder.generators.prompts import list_prompt_presets, resolve_prompt
 from dataset_builder.llm import OpenAICompatibleClient, OpenAICompatibleModelCatalog
 from dataset_builder.models import ExportFileType, ExportFormat, Message, PipelineStatus, ReviewStatus, utc_now
+from dataset_builder.training_targets import LLaMAFactoryConfig
 
 logger = logging.getLogger(__name__)
 ACTIVE_STATUSES = {
@@ -93,6 +95,18 @@ class ExportPayload(BaseModel):
 class DatasetVersionPayload(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     description: str | None = Field(default=None, max_length=1000)
+
+
+class LLaMAFactoryPackagePayload(BaseModel):
+    model_name_or_path: str = Field(min_length=1, max_length=500)
+    template: str = Field(min_length=1, max_length=100)
+    finetuning_type: Literal["lora", "full"] = "lora"
+    cutoff_len: int = Field(default=2048, ge=128, le=131072)
+    num_train_epochs: float = Field(default=3.0, gt=0, le=100)
+    learning_rate: float = Field(default=5e-5, gt=0, le=1)
+    per_device_train_batch_size: int = Field(default=2, ge=1, le=1024)
+    gradient_accumulation_steps: int = Field(default=8, ge=1, le=1024)
+    output_dir_name: str = Field(default="sft-output", min_length=1, max_length=100)
 
 
 class AugmentationPayload(BaseModel):
@@ -1386,6 +1400,30 @@ def create_app(
                 raise api_error(exc) from exc
             await session.commit()
             return {**record.model_dump(mode="json"), "download_url": f"/api/exports/{record.id}/download"}
+
+    @app.post("/api/versions/{version_id}/training-packages/llamafactory")
+    async def build_llamafactory_package(
+        version_id: UUID,
+        payload: LLaMAFactoryPackagePayload,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+        directory: Annotated[Path, Depends(export_dir_for)],
+    ) -> FileResponse:
+        destination = directory.resolve() / f"llamafactory-{version_id}-{uuid4()}.zip"
+        config = LLaMAFactoryConfig(**payload.model_dump())
+        async with factory() as session:
+            try:
+                version_name, count = await TrainingPackageService(session).build_llamafactory(
+                    version_id, destination, config
+                )
+            except (ValueError, LookupError, OSError) as exc:
+                raise api_error(exc) from exc
+        filename = f"llamafactory-{version_name}.zip"
+        return FileResponse(
+            destination,
+            filename=filename,
+            media_type="application/zip",
+            headers={"X-Sample-Count": str(count)},
+        )
 
     @app.get("/api/exports/{export_id}/download")
     async def download_export(
