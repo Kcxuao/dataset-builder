@@ -1,6 +1,8 @@
 """Persist import, split, generation, cleaning, and validation progress."""
 
 import asyncio
+import hashlib
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,7 +23,7 @@ from dataset_builder.db.orm import (
 )
 from dataset_builder.generators import InstructionGenerator, QAGenerator
 from dataset_builder.generators.prompts import resolve_prompt
-from dataset_builder.llm import LLMClient
+from dataset_builder.llm import LLMClient, QuotaExceededError
 from dataset_builder.models import Chunk, PipelineStatus, TrainingSample, ValidationIssue, utc_now
 from dataset_builder.parsers import CSVParser, ImportSource, JSONLParser, JSONParser, MarkdownParser, TextParser
 from dataset_builder.splitters import FixedLengthSplitter, MarkdownHeadingSplitter, ParagraphSplitter
@@ -40,12 +42,153 @@ class BuildSummary:
     failed_chunk_count: int
 
 
+@dataclass(frozen=True)
+class PreviewResult:
+    documents: list[object]
+    chunks: list[Chunk]
+    fingerprint: str
+
+
 class BuildService:
     def __init__(self, sessions: async_sessionmaker[AsyncSession], client: LLMClient) -> None:
         self.sessions = sessions
         self.client = client
         self.cleaner = BasicCleaner()
         self.validator = SampleValidator()
+
+    async def preview(
+        self, path: Path, generator_mode: str = "qa", splitter_mode: str = "auto",
+        max_chunk_length: int = 1000, overlap: int = 0, content_field: str | None = None,
+        content_columns: tuple[str, ...] = (), parser_workers: int = 1,
+        prompt_text: str | None = None, model_id: UUID | None = None,
+    ) -> PreviewResult:
+        self._validate_options(
+            path, generator_mode, splitter_mode, max_chunk_length, overlap,
+            content_field, content_columns, parser_workers,
+        )
+        documents, chunks = await self._parse_and_split(
+            path, uuid4(), splitter_mode, max_chunk_length, overlap,
+            content_field, content_columns, parser_workers,
+        )
+        return PreviewResult(
+            documents=documents, chunks=chunks,
+            fingerprint=self.preview_fingerprint(
+                path, generator_mode, splitter_mode, max_chunk_length, overlap, content_field,
+                content_columns, parser_workers, prompt_text, model_id,
+            ),
+        )
+
+    async def generate_preview(
+        self, path: Path, chunk_indices: list[int], fingerprint: str,
+        generator_mode: str = "qa", splitter_mode: str = "auto", max_chunk_length: int = 1000,
+        overlap: int = 0, content_field: str | None = None, content_columns: tuple[str, ...] = (),
+        parser_workers: int = 1, prompt_text: str | None = None, model_id: UUID | None = None,
+    ) -> tuple[list[TrainingSample], list[ValidationIssue]]:
+        if not chunk_indices or len(chunk_indices) > 3 or len(set(chunk_indices)) != len(chunk_indices):
+            raise ValueError("试生成必须选择 1 到 3 个不重复的内容块")
+        preview = await self.preview(
+            path, generator_mode, splitter_mode, max_chunk_length, overlap, content_field,
+            content_columns, parser_workers, prompt_text, model_id,
+        )
+        if fingerprint != preview.fingerprint:
+            raise ValueError("预览已失效：文件或配置已变化，请重新预览")
+        if any(index < 0 or index >= len(preview.chunks) for index in chunk_indices):
+            raise ValueError("试生成选择了不存在的内容块")
+        project_id = uuid4()
+        generator = (QAGenerator if generator_mode == "qa" else InstructionGenerator)(
+            self.client, project_id, system_prompt=prompt_text
+        )
+        samples: list[TrainingSample] = []
+        issues: list[ValidationIssue] = []
+        seen: set[tuple[UUID, str]] = set()
+        for index in chunk_indices:
+            chunk = preview.chunks[index]
+            try:
+                generated = await generator.generate(chunk)
+            except Exception as exc:
+                issues.append(ValidationIssue(
+                    sample_id=uuid4(), rule="generation_failed", severity="error",
+                    message=f"内容块 {index + 1} 试生成失败：{type(exc).__name__}: {exc}",
+                ))
+                if isinstance(exc, QuotaExceededError):
+                    break
+                continue
+            cleaned = self.cleaner.clean(generated, seen)
+            issues_by_id: dict[UUID, list[ValidationIssue]] = {}
+            for issue in cleaned.issues:
+                issues_by_id.setdefault(issue.sample_id, []).append(issue)
+            for sample in [*cleaned.accepted, *cleaned.rejected]:
+                sample_issues = issues_by_id.get(sample.id, []) + self.validator.validate(sample)
+                samples.append(sample)
+                issues.extend(sample_issues)
+                if not sample_issues and sample.content_hash:
+                    seen.add((sample.project_id, sample.content_hash))
+        return samples, issues
+
+    @staticmethod
+    def preview_fingerprint(
+        path: Path, generator_mode: str, splitter_mode: str, max_chunk_length: int, overlap: int,
+        content_field: str | None, content_columns: tuple[str, ...], parser_workers: int,
+        prompt_text: str | None, model_id: UUID | None,
+    ) -> str:
+        payload = {
+            "file_sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "filename": path.name,
+            "generator": generator_mode, "splitter": splitter_mode, "max_chunk_length": max_chunk_length,
+            "overlap": overlap, "content_field": content_field, "content_columns": content_columns,
+            "parser_workers": parser_workers, "prompt_text": prompt_text,
+            "model_id": str(model_id) if model_id else None,
+        }
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=list).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _validate_options(
+        path: Path, generator_mode: str, splitter_mode: str, max_chunk_length: int, overlap: int,
+        content_field: str | None, content_columns: tuple[str, ...], parser_workers: int,
+    ) -> None:
+        if generator_mode not in {"qa", "instruction"}:
+            raise ValueError("generator_mode must be qa or instruction")
+        if splitter_mode not in {"auto", "fixed", "paragraph", "markdown"}:
+            raise ValueError("splitter_mode must be auto, fixed, paragraph, or markdown")
+        extension = path.suffix.lower()
+        if extension not in {".txt", ".md", ".markdown", ".json", ".jsonl", ".csv"}:
+            raise ValueError(f"Unsupported input format: {extension}")
+        if extension in {".json", ".jsonl"} and not content_field:
+            raise ValueError("JSON and JSONL imports require --content-field")
+        if extension == ".csv" and not content_columns:
+            raise ValueError("CSV imports require --content-column")
+        if content_field and extension not in {".json", ".jsonl"}:
+            raise ValueError("--content-field is only supported for JSON and JSONL")
+        if content_columns and extension != ".csv":
+            raise ValueError("--content-column is only supported for CSV")
+        if max_chunk_length < 1 or overlap < 0 or overlap >= max_chunk_length:
+            raise ValueError("max_chunk_length must be positive and overlap must be smaller")
+        if not 1 <= parser_workers <= 16:
+            raise ValueError("解析工作线程数必须在 1 到 16 之间")
+
+    async def _parse_and_split(
+        self, path: Path, project_id: UUID, splitter_mode: str, max_chunk_length: int, overlap: int,
+        content_field: str | None, content_columns: tuple[str, ...], parser_workers: int,
+    ) -> tuple[list[object], list[Chunk]]:
+        parser = {
+            ".txt": TextParser, ".md": MarkdownParser, ".markdown": MarkdownParser,
+            ".json": JSONParser, ".jsonl": JSONLParser, ".csv": CSVParser,
+        }[path.suffix.lower()]()
+        documents = await asyncio.to_thread(parser.parse, ImportSource(
+            path=path, project_id=project_id, content_field=content_field,
+            content_columns=content_columns, workers=parser_workers,
+        ))
+        mode = "markdown" if splitter_mode == "auto" and path.suffix.lower() in {".md", ".markdown"} else splitter_mode
+        splitter_class = {
+            "fixed": FixedLengthSplitter, "paragraph": ParagraphSplitter, "markdown": MarkdownHeadingSplitter,
+        }["paragraph" if mode == "auto" else mode]
+        splitter = splitter_class(max_length=max_chunk_length, overlap=overlap)
+        chunks: list[Chunk] = []
+        for start in range(0, len(documents), parser_workers):
+            group = documents[start:start + parser_workers]
+            for result in await asyncio.gather(*(asyncio.to_thread(splitter.split, document) for document in group)):
+                chunks.extend(result)
+        return documents, chunks
 
     async def build(
         self,
@@ -85,27 +228,12 @@ class BuildService:
         custom_prompt: str | None = None,
         model_id: UUID | None = None,
     ) -> BuildSummary:
-        if generator_mode not in {"qa", "instruction"}:
-            raise ValueError("generator_mode must be qa or instruction")
-        if splitter_mode not in {"auto", "fixed", "paragraph", "markdown"}:
-            raise ValueError("splitter_mode must be auto, fixed, paragraph, or markdown")
         if not project_name.strip():
             raise ValueError("project_name must not be blank")
-        extension = path.suffix.lower()
-        if extension not in {".txt", ".md", ".markdown", ".json", ".jsonl", ".csv"}:
-            raise ValueError(f"Unsupported input format: {extension}")
-        if extension in {".json", ".jsonl"} and not content_field:
-            raise ValueError("JSON and JSONL imports require --content-field")
-        if extension == ".csv" and not content_columns:
-            raise ValueError("CSV imports require --content-column")
-        if content_field and extension not in {".json", ".jsonl"}:
-            raise ValueError("--content-field is only supported for JSON and JSONL")
-        if content_columns and extension != ".csv":
-            raise ValueError("--content-column is only supported for CSV")
-        if max_chunk_length < 1 or overlap < 0 or overlap >= max_chunk_length:
-            raise ValueError("max_chunk_length must be positive and overlap must be smaller")
-        if not 1 <= parser_workers <= 16:
-            raise ValueError("解析工作线程数必须在 1 到 16 之间")
+        self._validate_options(
+            path, generator_mode, splitter_mode, max_chunk_length, overlap,
+            content_field, content_columns, parser_workers,
+        )
         prompt_text = resolve_prompt(generator_mode, prompt_preset, custom_prompt)
 
         project_id, run_id = uuid4(), uuid4()
@@ -169,14 +297,6 @@ class BuildService:
         parser_workers: int,
         prompt_text: str | None,
     ) -> BuildSummary:
-        parser = {
-            ".txt": TextParser,
-            ".md": MarkdownParser,
-            ".markdown": MarkdownParser,
-            ".json": JSONParser,
-            ".jsonl": JSONLParser,
-            ".csv": CSVParser,
-        }[path.suffix.lower()]()
         async with self.sessions() as session:
             run = await session.get(PipelineRunRow, run_id)
             run.status = PipelineStatus.PARSING
@@ -184,23 +304,15 @@ class BuildService:
             await session.commit()
         logger.info("开始解析文件：运行编号 %s，文件 %s", run_id, path.name)
         parse_started = perf_counter()
-        documents = await asyncio.to_thread(parser.parse, ImportSource(
-            path=path, project_id=project_id,
-            content_field=content_field, content_columns=content_columns, workers=parser_workers,
-        ))
+        documents, chunks = await self._parse_and_split(
+            path, project_id, splitter_mode, max_chunk_length, overlap,
+            content_field, content_columns, parser_workers,
+        )
         logger.info(
             "文件解析完成：运行编号 %s，文档 %d 个，耗时 %.2f 秒",
             run_id, len(documents), perf_counter() - parse_started,
         )
 
-        mode = "markdown" if splitter_mode == "auto" and path.suffix.lower() in {".md", ".markdown"} else splitter_mode
-        if mode == "auto":
-            mode = "paragraph"
-        splitter = {
-            "fixed": FixedLengthSplitter,
-            "paragraph": ParagraphSplitter,
-            "markdown": MarkdownHeadingSplitter,
-        }[mode](max_length=max_chunk_length, overlap=overlap)
         async with self.sessions() as session:
             run = await session.get(PipelineRunRow, run_id)
             run.status = PipelineStatus.SPLITTING
@@ -208,11 +320,6 @@ class BuildService:
             await session.commit()
         logger.info("开始切分内容：运行编号 %s，文档 %d 个，工作线程 %d 个", run_id, len(documents), parser_workers)
         split_started = perf_counter()
-        chunks: list[Chunk] = []
-        for start in range(0, len(documents), parser_workers):
-            group = documents[start:start + parser_workers]
-            for result in await asyncio.gather(*(asyncio.to_thread(splitter.split, document) for document in group)):
-                chunks.extend(result)
         logger.info(
             "内容切分完成：运行编号 %s，内容块 %d 个，耗时 %.2f 秒",
             run_id, len(chunks), perf_counter() - split_started,
@@ -318,6 +425,9 @@ class BuildService:
                 sample_count, failed_count = await self._save_generation_result(
                     project_id, run_id, chunk, result, seen, sample_count, failed_count
                 )
+            if any(isinstance(result, QuotaExceededError) for result in results):
+                logger.warning("模型服务额度不足，已停止未开始的内容块请求：运行编号 %s", run_id)
+                break
 
         async with self.sessions() as session:
             run = await session.get(PipelineRunRow, run_id)

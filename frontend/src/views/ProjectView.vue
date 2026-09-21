@@ -87,9 +87,13 @@ async function retry() {
 }
 async function exportSamples() {
   busy.value = true
+  downloadUrl.value = ''
   try { const result = await api(`/api/projects/${route.params.id}/exports`, jsonOptions('POST', exportForm)); downloadUrl.value = result.download_url; ElMessage.success(`已导出 ${result.sample_count} 条样本`) }
   catch (error) { notifyError(error, ElMessage) }
   finally { busy.value = false }
+}
+function downloadExport() {
+  window.open(downloadUrl.value, '_blank', 'noopener')
 }
 async function trash() {
   try {
@@ -105,7 +109,7 @@ onUnmounted(() => clearTimeout(timer))
 <template>
   <div class="project-actions"><el-button :icon="RefreshRight" @click="reload">刷新</el-button><el-button v-if="run?.failed_items" type="warning" :icon="RefreshRight" @click="retry">重试失败内容块</el-button><el-button type="danger" plain :icon="Delete" @click="trash">移入回收站</el-button></div>
   <section class="section-card progress-card">
-    <div class="section-heading"><div><p class="eyebrow">BUILD PROGRESS</p><h2>{{ statusNames[run?.status] || '等待进度' }}</h2></div><strong class="progress-number">{{ run?.completed_items || 0 }} <span>/ {{ run?.total_items || 0 }}</span></strong></div>
+    <div class="section-heading"><div><h2>构建进度</h2><span class="section-subtitle" role="status">{{ statusNames[run?.status] || '正在读取任务状态' }}</span></div><strong class="progress-number">{{ run?.completed_items || 0 }} <span>/ {{ run?.total_items || 0 }}</span></strong></div>
     <el-progress :percentage="progressPercent" :stroke-width="10" :show-text="false" />
     <div class="progress-meta"><span>已成功 {{ run?.completed_items || 0 }} 个内容块</span><span>失败 {{ run?.failed_items || 0 }} 个</span><span>生成 {{ run?.sample_count || 0 }} 条样本</span></div>
     <el-alert v-if="run?.error_message" :title="run.error_message" type="error" :closable="false" show-icon class="run-alert" />
@@ -113,16 +117,17 @@ onUnmounted(() => clearTimeout(timer))
     <div v-if="run?.failed_chunks?.length" class="failed-chunks"><p v-for="chunk in run.failed_chunks" :key="chunk.id">内容块 {{ chunk.id.slice(0, 8) }}：{{ chunk.error }}</p></div>
   </section>
   <section class="section-card review-card">
-    <div class="section-heading review-heading"><div><p class="eyebrow">REVIEW QUEUE</p><h2>样本审核</h2><span class="section-subtitle">当前页 {{ samples.length }} 条 · 可批量处理</span></div><div class="bulk-toolbar"><el-button size="small" type="success" plain :disabled="!samples.length" @click="bulk('approved')">本页通过</el-button><el-button size="small" plain :disabled="!samples.length" @click="bulk('rejected')">本页拒绝</el-button><el-button size="small" plain :disabled="!samples.length" @click="bulk('pending')">待审核</el-button><el-button size="small" type="danger" plain :disabled="!samples.length" @click="bulk('delete')">删除</el-button><el-button size="small" plain :disabled="!samples.length" @click="bulk('restore')">恢复</el-button></div></div>
-    <el-table v-loading="loading" :data="samples" class="samples-table" stripe @row-click="openDetail">
+    <div class="section-heading review-heading"><div><h2>样本审核</h2><span class="section-subtitle">当前页 {{ samples.length }} 条；批量操作仅影响这一页</span></div><div class="bulk-toolbar"><el-button size="small" type="success" plain :disabled="!samples.length" @click="bulk('approved')">本页通过</el-button><el-button size="small" plain :disabled="!samples.length" @click="bulk('rejected')">本页拒绝</el-button><el-button size="small" plain :disabled="!samples.length" @click="bulk('pending')">设为待审核</el-button><el-button size="small" type="danger" plain :disabled="!samples.length" @click="bulk('delete')">删除本页</el-button><el-button size="small" plain :disabled="!samples.length" @click="bulk('restore')">恢复本页</el-button></div></div>
+    <el-empty v-if="!loading && !samples.length" :description="activeStatuses.has(run?.status) ? '正在生成样本，完成后会在这里显示' : '当前没有样本可审核'" />
+    <el-table v-else v-loading="loading" :data="samples" class="samples-table" stripe @row-click="openDetail">
       <el-table-column label="样本内容" min-width="340"><template #default="{ row }"><div class="sample-title">{{ excerpt(row) }}</div><small class="sample-id">#{{ row.id.slice(0, 8) }} · {{ row.messages.length }} 条消息</small></template></el-table-column>
       <el-table-column label="校验" width="110"><template #default="{ row }"><el-tag :type="row.validation_status === 'passed' ? 'success' : 'danger'" effect="plain" round>{{ row.validation_status === 'passed' ? '通过' : '失败' }}</el-tag></template></el-table-column>
       <el-table-column label="状态" width="120"><template #default="{ row }"><el-tag :type="sampleStatus(row)[1]" effect="light" round>{{ sampleStatus(row)[0] }}</el-tag></template></el-table-column>
       <el-table-column label="操作" width="90"><template #default="{ row }"><el-button text type="primary" @click.stop="openDetail(row)">查看</el-button></template></el-table-column>
     </el-table>
-    <div class="table-pagination"><el-button :disabled="page === 1" @click="page--; loadSamples()">上一页</el-button><span>第 {{ page }} 页</span><el-button :disabled="samples.length < limit" @click="page++; loadSamples()">下一页</el-button></div>
+    <div v-if="samples.length" class="table-pagination"><el-button :disabled="page === 1" @click="page--; loadSamples()">上一页</el-button><span>第 {{ page }} 页</span><el-button :disabled="samples.length < limit" @click="page++; loadSamples()">下一页</el-button></div>
   </section>
-  <section class="section-card export-card"><div><p class="eyebrow">FINAL STEP</p><h2>导出训练数据</h2><p>仅导出校验通过、审核通过且未删除的样本。</p></div><div class="export-controls"><el-select v-model="exportForm.format"><el-option label="ShareGPT" value="sharegpt" /><el-option label="Alpaca" value="alpaca" /></el-select><el-select v-model="exportForm.file_type"><el-option label="JSONL" value="jsonl" /><el-option label="JSON" value="json" /></el-select><el-button type="primary" :loading="busy" :icon="Download" @click="exportSamples">生成文件</el-button><el-button v-if="downloadUrl" link type="primary" @click="window.open(downloadUrl, '_blank')">下载文件</el-button></div></section>
+  <section class="section-card export-card"><div><h2>导出训练数据</h2><p>仅导出校验通过、审核通过且未删除的样本。</p></div><div class="export-controls"><el-select v-model="exportForm.format" aria-label="导出格式"><el-option label="ShareGPT" value="sharegpt" /><el-option label="Alpaca" value="alpaca" /></el-select><el-select v-model="exportForm.file_type" aria-label="文件类型"><el-option label="JSONL" value="jsonl" /><el-option label="JSON" value="json" /></el-select><el-button type="primary" :loading="busy" :icon="Download" @click="exportSamples">生成文件</el-button><el-button v-if="downloadUrl" link type="primary" @click="downloadExport">下载文件</el-button></div></section>
   <el-drawer v-model="drawer" :title="`样本 #${detail?.id?.slice(0, 8) || ''}`" size="min(680px, 100%)" class="sample-drawer">
     <template v-if="detail"><div class="drawer-status"><el-tag :type="sampleStatus(detail)[1]" round>{{ sampleStatus(detail)[0] }}</el-tag><span>来源内容块 #{{ detail.chunk_id.slice(0, 8) }}</span></div>
       <div class="drawer-section"><h3>消息内容</h3><div v-for="(message, index) in messages" :key="index" class="message-card"><div class="message-head"><el-select v-model="message.role"><el-option label="system" value="system" /><el-option label="user" value="user" /><el-option label="assistant" value="assistant" /></el-select><el-button text type="danger" @click="messages.splice(index, 1)">移除</el-button></div><el-input v-model="message.content" type="textarea" :rows="3" /></div><el-button text type="primary" @click="messages.push({ role: 'user', content: '' })">＋ 添加消息</el-button><el-button type="primary" :loading="busy" @click="saveMessages">保存修改</el-button></div>

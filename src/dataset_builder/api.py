@@ -17,6 +17,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from dataset_builder.application.build import BuildService
 from dataset_builder.application.model_configs import ModelConfigInput, ModelConfigService
+from dataset_builder.application.model_discovery import (
+    ModelCatalogFactory,
+    ModelConnectionCheckInput,
+    ModelConnectionService,
+    ModelDiscoveryInput,
+    ModelDiscoveryService,
+    list_model_providers,
+)
 from dataset_builder.application.projects import ProjectService
 from dataset_builder.application.review import ReviewService
 from dataset_builder.application.workspace import PromptTemplateInput, WorkspaceService, WorkspaceSettingsInput
@@ -32,7 +40,7 @@ from dataset_builder.db.orm import (
 from dataset_builder.db.session import create_engine, create_session_factory
 from dataset_builder.exporters.service import SampleExportService
 from dataset_builder.generators.prompts import list_prompt_presets
-from dataset_builder.llm import OpenAICompatibleClient
+from dataset_builder.llm import OpenAICompatibleClient, OpenAICompatibleModelCatalog
 from dataset_builder.models import ExportFileType, ExportFormat, Message, PipelineStatus, ReviewStatus, utc_now
 
 logger = logging.getLogger(__name__)
@@ -63,6 +71,21 @@ class BulkPayload(BaseModel):
 class ExportPayload(BaseModel):
     format: ExportFormat
     file_type: ExportFileType
+
+
+def upload_filename(file: UploadFile) -> str:
+    filename = (file.filename or "").replace("\\", "/").split("/")[-1]
+    if not filename or filename in {".", ".."}:
+        raise HTTPException(status_code=422, detail="必须提供源文件名")
+    return filename
+
+
+async def save_upload(file: UploadFile, temporary: TemporaryDirectory[str], filename: str) -> Path:
+    path = Path(temporary.name) / filename
+    with path.open("wb") as destination:
+        while data := await file.read(1024 * 1024):
+            destination.write(data)
+    return path
 
 
 def sessions_for(request: Request) -> async_sessionmaker[AsyncSession]:
@@ -147,6 +170,7 @@ def create_app(
     sessions: async_sessionmaker[AsyncSession] | None = None,
     export_dir: Path | None = None,
     client_factory: Callable[[LLMSettings], object] = OpenAICompatibleClient,
+    model_catalog_factory: ModelCatalogFactory = OpenAICompatibleModelCatalog,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -167,6 +191,7 @@ def create_app(
     app = FastAPI(title="Dataset Builder", lifespan=lifespan)
     app.state.active_run_ids = set()
     app.state.client_factory = client_factory
+    app.state.model_catalog_factory = model_catalog_factory
     project_logger = logging.getLogger("dataset_builder")
     project_logger.setLevel(logging.INFO)
     if not project_logger.handlers:
@@ -248,6 +273,35 @@ def create_app(
     async def list_models(factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)]) -> list[dict]:
         async with factory() as session:
             return await ModelConfigService(session).list_models()
+
+    @app.get("/api/model-providers")
+    async def list_providers() -> list[dict[str, str | None]]:
+        return list_model_providers()
+
+    @app.post("/api/models/discover")
+    async def discover_models(
+        payload: ModelDiscoveryInput,
+        request: Request,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+    ) -> dict[str, list[dict[str, str]]]:
+        async with factory() as session:
+            try:
+                return await ModelDiscoveryService(
+                    session, request.app.state.model_catalog_factory,
+                ).discover(payload)
+            except (ValueError, LookupError) as exc:
+                raise api_error(exc) from exc
+
+    @app.post("/api/models/connection-check")
+    async def check_model_connections(
+        payload: ModelConnectionCheckInput,
+        request: Request,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+    ) -> dict[str, list[dict[str, object]]]:
+        async with factory() as session:
+            return await ModelConnectionService(
+                session, request.app.state.model_catalog_factory,
+            ).check(payload)
 
     @app.post("/api/models", status_code=201)
     async def create_model(
@@ -369,9 +423,7 @@ def create_app(
         custom_prompt: Annotated[str | None, Form()] = None,
         prompt_id: Annotated[str | None, Form()] = None,
     ) -> dict:
-        filename = (file.filename or "").replace("\\", "/").split("/")[-1]
-        if not filename or filename in {".", ".."}:
-            raise HTTPException(status_code=422, detail="必须提供源文件名")
+        filename = upload_filename(file)
         async with factory() as session:
             workspace = WorkspaceService(session)
             defaults = await workspace.settings()
@@ -391,10 +443,7 @@ def create_app(
         client = await selected_client(factory, model_id, request.app.state.client_factory)
         temporary = TemporaryDirectory(prefix="dataset-builder-upload-")
         try:
-            path = Path(temporary.name) / filename
-            with path.open("wb") as destination:
-                while data := await file.read(1024 * 1024):
-                    destination.write(data)
+            path = await save_upload(file, temporary, filename)
             columns = tuple(column.strip() for column in (content_columns or "").split(",") if column.strip())
             summary = await BuildService(factory, client).prepare_build(
                 path, project_name or path.stem, generator, splitter, max_chars, overlap,
@@ -412,6 +461,122 @@ def create_app(
             run_build_in_background, factory, client, summary.run_id, path, temporary, request.app
         )
         return {"project_id": summary.project_id, "run_id": summary.run_id}
+
+    @app.post("/api/projects/preview")
+    async def preview_project(
+        file: Annotated[UploadFile, File()],
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+        generator: Annotated[str, Form()] = "qa",
+        splitter: Annotated[str, Form()] = "auto",
+        max_chars: Annotated[int, Form(ge=1)] = 1000,
+        overlap: Annotated[int, Form(ge=0)] = 0,
+        parser_workers: Annotated[int | None, Form(ge=1, le=16)] = None,
+        content_field: Annotated[str | None, Form()] = None,
+        content_columns: Annotated[str | None, Form()] = None,
+        model_id: Annotated[UUID | None, Form()] = None,
+        prompt_preset: Annotated[str, Form()] = "default",
+        custom_prompt: Annotated[str | None, Form()] = None,
+        prompt_id: Annotated[str | None, Form()] = None,
+    ) -> dict:
+        filename = upload_filename(file)
+        async with factory() as session:
+            workspace = WorkspaceService(session)
+            defaults = await workspace.settings()
+            parser_workers = parser_workers or int(defaults["parser_workers"])
+            if model_id is None and defaults["default_model_id"]:
+                model_id = UUID(str(defaults["default_model_id"]))
+            if model_id is not None:
+                try:
+                    await ModelConfigService(session).active_model(model_id)
+                except LookupError as exc:
+                    raise api_error(exc) from exc
+            if prompt_id:
+                try:
+                    prompt_preset, custom_prompt = await workspace.resolve_prompt(generator, prompt_id)
+                except ValueError as exc:
+                    raise api_error(exc) from exc
+        temporary = TemporaryDirectory(prefix="dataset-builder-preview-")
+        try:
+            path = await save_upload(file, temporary, filename)
+            columns = tuple(column.strip() for column in (content_columns or "").split(",") if column.strip())
+            preview = await BuildService(factory, None).preview(
+                path, generator, splitter, max_chars, overlap, content_field or None, columns,
+                parser_workers, custom_prompt, model_id,
+            )
+            max_output_tokens = None
+            if model_id is not None:
+                async with factory() as session:
+                    max_output_tokens = (await ModelConfigService(session).settings_for(model_id)).max_tokens
+            return {
+                "fingerprint": preview.fingerprint, "document_count": len(preview.documents),
+                "chunk_count": len(preview.chunks), "estimated_request_upper_bound": len(preview.chunks),
+                "max_output_tokens": max_output_tokens,
+                "chunks": [
+                    {
+                        "index": index, "content": chunk.content, "length": len(chunk.content),
+                        "source_name": next(
+                            document.source_name for document in preview.documents if document.id == chunk.document_id
+                        ),
+                    }
+                    for index, chunk in enumerate(preview.chunks[:20])
+                ],
+            }
+        except (ValueError, LookupError, OSError) as exc:
+            raise api_error(exc) from exc
+        finally:
+            temporary.cleanup()
+
+    @app.post("/api/projects/preview/generate")
+    async def generate_preview(
+        file: Annotated[UploadFile, File()], request: Request,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+        fingerprint: Annotated[str, Form(min_length=1)], chunk_indices: Annotated[str, Form(min_length=1)],
+        generator: Annotated[str, Form()] = "qa", splitter: Annotated[str, Form()] = "auto",
+        max_chars: Annotated[int, Form(ge=1)] = 1000, overlap: Annotated[int, Form(ge=0)] = 0,
+        parser_workers: Annotated[int | None, Form(ge=1, le=16)] = None,
+        content_field: Annotated[str | None, Form()] = None, content_columns: Annotated[str | None, Form()] = None,
+        model_id: Annotated[UUID | None, Form()] = None, prompt_preset: Annotated[str, Form()] = "default",
+        custom_prompt: Annotated[str | None, Form()] = None, prompt_id: Annotated[str | None, Form()] = None,
+    ) -> dict:
+        filename = upload_filename(file)
+        try:
+            indices = [int(value) for value in chunk_indices.split(",") if value.strip()]
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="试生成内容块序号必须是整数") from exc
+        async with factory() as session:
+            workspace = WorkspaceService(session)
+            defaults = await workspace.settings()
+            parser_workers = parser_workers or int(defaults["parser_workers"])
+            if model_id is None and defaults["default_model_id"]:
+                model_id = UUID(str(defaults["default_model_id"]))
+            if model_id is not None:
+                try:
+                    await ModelConfigService(session).active_model(model_id)
+                except LookupError as exc:
+                    raise api_error(exc) from exc
+            if prompt_id:
+                try:
+                    prompt_preset, custom_prompt = await workspace.resolve_prompt(generator, prompt_id)
+                except ValueError as exc:
+                    raise api_error(exc) from exc
+        client = await selected_client(factory, model_id, request.app.state.client_factory)
+        temporary = TemporaryDirectory(prefix="dataset-builder-preview-")
+        try:
+            path = await save_upload(file, temporary, filename)
+            columns = tuple(column.strip() for column in (content_columns or "").split(",") if column.strip())
+            samples, issues = await BuildService(factory, client).generate_preview(
+                path, indices, fingerprint, generator, splitter, max_chars, overlap, content_field or None,
+                columns, parser_workers, custom_prompt, model_id,
+            )
+            return {
+                "samples": [sample.model_dump(mode="json") for sample in samples],
+                "issues": [issue.model_dump(mode="json") for issue in issues],
+            }
+        except (ValueError, LookupError, OSError) as exc:
+            raise api_error(exc) from exc
+        finally:
+            temporary.cleanup()
+            await close_client(client)
 
     @app.post("/api/projects/{project_id}/retry", status_code=202)
     async def retry_project(

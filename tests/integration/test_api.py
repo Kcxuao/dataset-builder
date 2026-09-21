@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -10,7 +11,7 @@ import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from dataset_builder.api import create_app
@@ -68,7 +69,9 @@ async def test_http_build_review_export(tmp_path: Path, monkeypatch: pytest.Monk
                 page = await client.get("/")
                 assert page.status_code == 200
                 assert "训练数据工作台" in page.text
-                assert (await client.get("/static/app.js")).status_code == 200
+                script = re.search(r'src="(/static/assets/[^"]+\.js)"', page.text)
+                assert script is not None
+                assert (await client.get(script.group(1))).status_code == 200
                 assert (await client.get("/api/projects/missing/samples")).status_code == 422
                 model = await client.post("/api/models", json={
                     "name": "测试模型", "base_url": "https://example.com/v1", "api_key": "本地测试密钥",
@@ -78,6 +81,47 @@ async def test_http_build_review_export(tmp_path: Path, monkeypatch: pytest.Monk
                 model_id = model.json()["id"]
                 assert "api_key" not in model.json()
                 assert "本地测试密钥" not in (await client.get("/api/models")).text
+                project_count = await sessions.scalar(select(func.count(ProjectRow.id)))
+                preview = await client.post(
+                    "/api/projects/preview", files={"file": ("preview.txt", b"one\n\ntwo\n\nthree")},
+                    data={"splitter": "paragraph", "max_chars": "10", "model_id": model.json()["id"]},
+                )
+                assert preview.status_code == 200, preview.text
+                preview_data = preview.json()
+                assert preview_data["document_count"] == 1
+                assert preview_data["chunk_count"] == 3
+                assert [chunk["content"] for chunk in preview_data["chunks"]] == ["one", "two", "three"]
+                assert preview_data["estimated_request_upper_bound"] == 3
+                assert preview_data["max_output_tokens"] == 1024
+                assert await sessions.scalar(select(func.count(ProjectRow.id))) == project_count
+                generated_before = len(selected_models)
+                trial = await client.post(
+                    "/api/projects/preview/generate", files={"file": ("preview.txt", b"one\n\ntwo\n\nthree")},
+                    data={
+                        "splitter": "paragraph", "max_chars": "10", "model_id": model.json()["id"],
+                        "fingerprint": preview_data["fingerprint"], "chunk_indices": "0,2",
+                    },
+                )
+                assert trial.status_code == 200, trial.text
+                assert len(selected_models) == generated_before + 2
+                assert len(trial.json()["samples"]) == 2
+                assert await sessions.scalar(select(func.count(ProjectRow.id))) == project_count
+                stale_trial = await client.post(
+                    "/api/projects/preview/generate", files={"file": ("preview.txt", b"changed")},
+                    data={
+                        "splitter": "paragraph", "max_chars": "10", "model_id": model.json()["id"],
+                        "fingerprint": preview_data["fingerprint"], "chunk_indices": "0",
+                    },
+                )
+                assert stale_trial.status_code == 422
+                too_many = await client.post(
+                    "/api/projects/preview/generate", files={"file": ("preview.txt", b"one\n\ntwo\n\nthree\n\nfour")},
+                    data={
+                        "splitter": "paragraph", "max_chars": "10", "model_id": model.json()["id"],
+                        "fingerprint": "ignored", "chunk_indices": "0,1,2,3",
+                    },
+                )
+                assert too_many.status_code == 422
                 settings = await client.put("/api/workspace/settings", json={
                     "parser_workers": 3, "default_model_id": model_id,
                 })

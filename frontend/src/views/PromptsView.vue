@@ -27,7 +27,7 @@ onMounted(load)
 </script>
 
 <template>
-  <section class="section-card"><div class="section-heading"><div><p class="eyebrow">PROMPT LIBRARY</p><h2>提示词模板</h2><span class="section-subtitle">选择内置预设，或保存自己的生成规则</span></div><el-button type="primary" :icon="Plus" @click="openForm()">新增模板</el-button></div>
+  <section class="section-card"><div class="section-heading"><div><h2>提示词模板</h2><span class="section-subtitle">选择内置预设，或保存自己的生成规则</span></div><el-button type="primary" :icon="Plus" @click="openForm()">新增模板</el-button></div>
     <el-segmented v-model="mode" :options="[{ label: '问答生成', value: 'qa' }, { label: '指令生成', value: 'instruction' }]" class="prompt-segment" />
     <div class="prompt-grid"><div v-for="prompt in visible" :key="prompt.id" class="prompt-card"><div class="prompt-card-top"><span class="prompt-mark">“</span><el-tag :type="prompt.builtin ? 'info' : 'primary'" effect="light" round>{{ prompt.builtin ? '内置预设' : '自定义' }}</el-tag></div><h3>{{ prompt.name }}</h3><p>{{ prompt.instruction }}</p><div v-if="!prompt.builtin" class="prompt-actions"><el-button text :icon="EditPen" @click="openForm(prompt)">编辑</el-button><el-button text type="danger" :icon="Delete" @click="remove(prompt)">删除</el-button></div></div></div>
   </section>

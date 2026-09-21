@@ -62,6 +62,12 @@ class ModelConfigService:
         name = data.name.strip()
         if not name or not data.model.strip():
             raise ValueError("配置名称和模型名称不能为空")
+        if (
+            data.api_key is None
+            and old.api_key
+            and _normalized_url(str(data.base_url)) != _normalized_url(old.base_url)
+        ):
+            raise ValueError("已修改接口地址，请填写新 API Key 后再保存")
         conflict = await self.session.scalar(select(ModelConfigRow.id).where(
             ModelConfigRow.name == name, ModelConfigRow.archived_at.is_(None), ModelConfigRow.id != model_id
         ))
@@ -117,3 +123,7 @@ class ModelConfigService:
             "max_retries": row.max_retries, "json_mode": row.json_mode,
             "thinking": row.thinking, "created_at": row.created_at,
         }
+
+
+def _normalized_url(value: str) -> str:
+    return value.rstrip("/")

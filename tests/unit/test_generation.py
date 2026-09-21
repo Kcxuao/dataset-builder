@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from dataset_builder.config import LLMSettings
 from dataset_builder.generators.qa import QAGenerator, QAResponse
-from dataset_builder.llm.client import LLMResponseError, OpenAICompatibleClient, parse_response
+from dataset_builder.llm.client import LLMResponseError, OpenAICompatibleClient, is_quota_error, parse_response
 from dataset_builder.models import Chunk, Message, MessageRole
 
 
@@ -155,6 +155,12 @@ async def test_client_explains_truncated_and_reasoning_only_results() -> None:
 def test_response_parser_reports_schema_field() -> None:
     with pytest.raises(LLMResponseError, match="pairs.0.answer"):
         parse_response('{"pairs": [{"question": "Q"}]}', QAResponse)
+
+
+def test_quota_error_detection_distinguishes_quota_from_regular_rate_limits() -> None:
+    assert is_quota_error(ValueError("insufficient_quota"))
+    assert is_quota_error(ValueError("账户额度不足"))
+    assert not is_quota_error(ValueError("rate limit exceeded"))
 
 
 @pytest.mark.asyncio
