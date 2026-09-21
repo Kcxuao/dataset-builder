@@ -11,7 +11,7 @@ Application Services / Pipeline
       ↓
 Domain Models + Core Interfaces
       ↓
-Parser → Splitter → Generator / Augmentation → Cleaner → Validator
+Parser → Splitter → Generator / Augmentation / Distillation → Cleaner → Validator
       ↓
 Review
       ↓
@@ -131,6 +131,16 @@ class Formatter(Protocol):
 - error_message
 
 扩增由独立应用服务编排，不改变原始文件构建链路。每个 Job 只扩增一个已通过种子样本，任务可在失败后仅重试未完成 Job；结果通过统一 Cleaner 和 Validator 后才作为待审核样本写入。
+
+### DistillationJob
+
+- run_id
+- source_sample_id
+- candidate_sample_id
+- status
+- error_message
+
+蒸馏由独立应用服务编排，只读取审核和校验通过、未删除且未替代的原样本。LLM 输出与原对话 assistant 消息等数量的升级回复，服务只替换这些回复并保留 system/user 与多轮顺序。候选通过人工审核后，Review 服务标记原样本为已替代；批量审核也遵循相同规则。
 
 ### ValidationIssue
 

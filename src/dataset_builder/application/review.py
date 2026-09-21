@@ -118,6 +118,8 @@ class ReviewService:
         self._check_approval(row, status)
         row.review_status = status.value
         row.updated_at = utc_now()
+        if status == ReviewStatus.APPROVED:
+            await self._supersede_distillation_source(row)
         await self.session.flush()
         return await self._view(row)
 
@@ -151,6 +153,8 @@ class ReviewService:
                 row.is_deleted = False
             else:
                 row.review_status = action
+                if action == "approved":
+                    await self._supersede_distillation_source(row)
             row.updated_at = utc_now()
             updated.append(str(sample_id))
         await self.session.flush()
@@ -160,6 +164,21 @@ class ReviewService:
     def _check_approval(row: TrainingSampleRow, status: ReviewStatus) -> None:
         if status == ReviewStatus.APPROVED and (row.validation_status != "passed" or row.is_deleted):
             raise ValueError("样本校验未通过或已删除，无法审核通过")
+
+    async def _supersede_distillation_source(self, row: TrainingSampleRow) -> None:
+        if row.metadata_.get("generator") != "distillation":
+            return
+        source_id = row.metadata_.get("distillation_source_id")
+        if not source_id:
+            return
+        try:
+            source_uuid = UUID(str(source_id))
+        except ValueError:
+            return
+        source = await self.session.get(TrainingSampleRow, source_uuid)
+        if source is not None and source.project_id == row.project_id:
+            source.superseded_at = utc_now()
+            source.updated_at = utc_now()
 
     async def set_deleted(self, sample_id: UUID, deleted: bool) -> dict[str, object]:
         row = await self._row(sample_id)
@@ -199,5 +218,6 @@ class ReviewService:
             "superseded_at": row.superseded_at,
             "parent_sample_id": str(row.parent_sample_id) if row.parent_sample_id else None,
             "generation_run_id": str(row.generation_run_id) if row.generation_run_id else None,
+            "distillation_source_id": row.metadata_.get("distillation_source_id"),
             "issues": [{"rule": issue.rule, "severity": issue.severity, "message": issue.message} for issue in issues],
         }

@@ -55,6 +55,7 @@ class PipelineStatus(StrEnum):
     CLEANING = "cleaning"
     VALIDATING = "validating"
     AUGMENTING = "augmenting"
+    DISTILLING = "distilling"
     READY_FOR_REVIEW = "ready_for_review"
     COMPLETED = "completed"
     FAILED = "failed"

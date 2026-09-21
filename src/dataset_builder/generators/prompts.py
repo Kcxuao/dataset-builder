@@ -18,6 +18,11 @@ MULTI_TURN_FORMAT = (
     '{"role": "assistant", "content": "第二答"}]}]}。'
     '每个 items 元素是一条完整训练样本，必须至少包含两轮 user/assistant 对话，不能拆成多个 items。'
 )
+DISTILLATION_FORMAT = (
+    '只返回一个 json 对象，不要解释或代码块，格式为 '
+    '{"assistant_messages": ["升级后的第一条回复", "升级后的第二条回复"]}。'
+    '数组数量必须与原对话中的 assistant 消息数量完全一致；只升级 assistant 回复，不要输出或改写 system/user 消息。'
+)
 
 PROMPT_PRESETS = {
     "qa": [
@@ -40,6 +45,23 @@ PROMPT_PRESETS = {
             "id": "precise",
             "name": "事实优先",
             "instruction": "只表达来源中可验证的信息；信息不足时不要补充或猜测。",
+        },
+    ],
+    "distillation": [
+        {
+            "id": "faithful",
+            "name": "事实保真",
+            "instruction": "严格依据来源内容，纠正不准确表述并补足必要依据，不添加未经来源支持的事实。",
+        },
+        {
+            "id": "clear",
+            "name": "表达优化",
+            "instruction": "保持原意与事实，提升回答的清晰度、结构和可读性。",
+        },
+        {
+            "id": "reasoned",
+            "name": "推理展开",
+            "instruction": "保持事实可靠，在需要时补足简洁、可核查的解释或推理步骤。",
         },
     ],
 }
@@ -72,7 +94,9 @@ def resolve_prompt(
         if selected is None:
             raise ValueError("提示词预设不存在")
         instruction = selected["instruction"]
-    if multi_turn:
+    if mode == "distillation":
+        output_format = DISTILLATION_FORMAT
+    elif multi_turn:
         output_format = MULTI_TURN_FORMAT
     elif mode == "qa":
         output_format = QA_FORMAT

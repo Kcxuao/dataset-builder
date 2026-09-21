@@ -90,6 +90,10 @@ class QualitySummaryService:
             .select_from(TrainingSampleRow)
             .where(*sample_conditions, TrainingSampleRow.parent_sample_id.is_not(None))
         )
+        metadata_rows = (
+            await self.session.scalars(select(TrainingSampleRow.metadata_).where(*sample_conditions))
+        ).all()
+        distilled_count = sum(metadata.get("generator") == "distillation" for metadata in metadata_rows)
         chunks = Counter({status: count for status, count in chunk_rows})
         reviews = Counter()
         validations = Counter()
@@ -106,5 +110,9 @@ class QualitySummaryService:
             "message_lengths": buckets,
             "sources": [{"name": name, "count": count} for name, count in source_rows],
             "exportable_count": exportable_count or 0,
-            "origins": {"original": original_count or 0, "augmented": augmented_count or 0},
+            "origins": {
+                "original": max(0, (original_count or 0) - distilled_count),
+                "augmented": augmented_count or 0,
+                "distilled": distilled_count,
+            },
         }

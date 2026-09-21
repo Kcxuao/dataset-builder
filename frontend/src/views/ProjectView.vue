@@ -38,9 +38,16 @@ const augmentationStrategies = [
   { id: 'audience', name: '角色视角', description: '为不同受众组织解释。' },
   { id: 'scenario', name: '场景应用', description: '把知识落到具体任务中。' },
 ]
+const distillationDialog = ref(false)
+const distillationPreview = ref(null)
+const distillationLoading = ref(false)
+const distillationSources = ref([])
+const distillationPrompts = ref([])
+const distillationModels = ref([])
+const distillationForm = reactive({ target_count: 100, keyword: '', source_document_ids: [], prompt_mode: 'template', prompt_id: '', custom_prompt: '', model_id: '' })
 let timer = null
-const activeStatuses = new Set(['created', 'importing', 'parsing', 'splitting', 'generating', 'augmenting', 'cleaning', 'validating'])
-const statusNames = { created: '任务已创建', importing: '正在导入', parsing: '正在解析', splitting: '正在切分', generating: '正在生成', augmenting: '正在扩增', cleaning: '正在清洗', validating: '正在校验', ready_for_review: '等待审核', completed: '处理完成', failed: '构建失败', interrupted: '任务已中断' }
+const activeStatuses = new Set(['created', 'importing', 'parsing', 'splitting', 'generating', 'augmenting', 'distilling', 'cleaning', 'validating'])
+const statusNames = { created: '任务已创建', importing: '正在导入', parsing: '正在解析', splitting: '正在切分', generating: '正在生成', augmenting: '正在扩增', distilling: '正在蒸馏', cleaning: '正在清洗', validating: '正在校验', ready_for_review: '等待审核', completed: '处理完成', failed: '构建失败', interrupted: '任务已中断' }
 const progressPercent = computed(() => run.value?.total_items ? Math.min(100, Math.round(((run.value.completed_items + run.value.failed_items) / run.value.total_items) * 100)) : 0)
 function sampleStatus(item) {
   if (item.is_deleted) return ['已删除', 'info']
@@ -120,7 +127,9 @@ async function bulk(action) {
   } catch (error) { if (error !== 'cancel') notifyError(error, ElMessage) }
 }
 async function retry() {
-  try { await api(run.value?.run_type === 'augmentation' ? `/api/runs/${run.value.id}/retry` : `/api/projects/${route.params.id}/retry`, { method: 'POST' }); await reload(); ElMessage.success(run.value?.run_type === 'augmentation' ? '失败扩增任务已开始重试' : '失败内容块已开始重试') }
+  const isBackgroundRun = ['augmentation', 'distillation'].includes(run.value?.run_type)
+  const label = run.value?.run_type === 'distillation' ? '蒸馏' : '扩增'
+  try { await api(isBackgroundRun ? `/api/runs/${run.value.id}/retry` : `/api/projects/${route.params.id}/retry`, { method: 'POST' }); await reload(); ElMessage.success(isBackgroundRun ? `失败${label}任务已开始重试` : '失败内容块已开始重试') }
   catch (error) { notifyError(error, ElMessage) }
 }
 function augmentationPayload(includeFingerprint = false) {
@@ -145,6 +154,35 @@ async function openAugmentation() {
     augmentationPreview.value = null; augmentationDialog.value = true
   } catch (error) { notifyError(error, ElMessage) }
   finally { augmentationLoading.value = false }
+}
+function distillationPayload(includeFingerprint = false) {
+  const payload = { target_count: distillationForm.target_count, keyword: distillationForm.keyword || null, source_document_ids: distillationForm.source_document_ids, model_id: distillationForm.model_id || null }
+  if (distillationForm.prompt_mode === 'custom') payload.custom_prompt = distillationForm.custom_prompt
+  else if (distillationForm.prompt_id) payload.prompt_id = distillationForm.prompt_id
+  if (includeFingerprint) payload.fingerprint = distillationPreview.value?.fingerprint
+  return payload
+}
+async function openDistillation() {
+  distillationLoading.value = true
+  try {
+    const [sources, prompts, models] = await Promise.all([api(`/api/projects/${route.params.id}/augmentation-options`), api('/api/prompts'), api('/api/models')])
+    distillationSources.value = sources; distillationPrompts.value = prompts.filter(item => item.mode === 'distillation'); distillationModels.value = models
+    if (!distillationForm.prompt_id) distillationForm.prompt_id = distillationPrompts.value[0]?.id || ''
+    distillationPreview.value = null; distillationDialog.value = true
+  } catch (error) { notifyError(error, ElMessage) }
+  finally { distillationLoading.value = false }
+}
+async function previewDistillation() {
+  distillationLoading.value = true
+  try { distillationPreview.value = await api(`/api/projects/${route.params.id}/distillations/preview`, jsonOptions('POST', distillationPayload())); ElMessage.success('蒸馏计划已检查，尚未调用模型') }
+  catch (error) { notifyError(error, ElMessage) }
+  finally { distillationLoading.value = false }
+}
+async function startDistillation() {
+  distillationLoading.value = true
+  try { await api(`/api/projects/${route.params.id}/distillations`, jsonOptions('POST', distillationPayload(true))); distillationDialog.value = false; await reload(); ElMessage.success('教师答案升级已启动，结果会进入待审核') }
+  catch (error) { notifyError(error, ElMessage) }
+  finally { distillationLoading.value = false }
 }
 async function previewAugmentation() {
   augmentationLoading.value = true
@@ -181,7 +219,7 @@ onUnmounted(() => clearTimeout(timer))
 </script>
 
 <template>
-  <div class="project-actions"><el-button type="primary" :icon="MagicStick" @click="openAugmentation">扩展数据集</el-button><el-button :icon="RefreshRight" @click="reload">刷新</el-button><el-button v-if="run?.failed_items" type="warning" :icon="RefreshRight" @click="retry">{{ run?.run_type === 'augmentation' ? '重试扩增任务' : '重试失败内容块' }}</el-button><el-button type="danger" plain :icon="Delete" @click="trash">移入回收站</el-button></div>
+  <div class="project-actions"><el-button type="primary" :icon="MagicStick" @click="openAugmentation">扩展数据集</el-button><el-button plain :icon="MagicStick" @click="openDistillation">教师答案升级</el-button><el-button :icon="RefreshRight" @click="reload">刷新</el-button><el-button v-if="run?.failed_items" type="warning" :icon="RefreshRight" @click="retry">{{ run?.run_type === 'augmentation' ? '重试扩增任务' : run?.run_type === 'distillation' ? '重试蒸馏任务' : '重试失败内容块' }}</el-button><el-button type="danger" plain :icon="Delete" @click="trash">移入回收站</el-button></div>
   <section class="section-card progress-card">
     <div class="section-heading"><div><h2>构建进度</h2><span class="section-subtitle" role="status">{{ statusNames[run?.status] || '正在读取任务状态' }}</span></div><strong class="progress-number">{{ run?.completed_items || 0 }} <span>/ {{ run?.total_items || 0 }}</span></strong></div>
     <el-progress :percentage="progressPercent" :stroke-width="10" :show-text="false" />
@@ -192,7 +230,7 @@ onUnmounted(() => clearTimeout(timer))
   </section>
   <section v-if="quality" class="section-card quality-card">
     <div class="section-heading"><div><h2>数据概览</h2><span class="section-subtitle">{{ quality.scope }}</span></div><el-button text type="primary" @click="loadQuality">更新统计</el-button></div>
-    <div class="quality-metrics"><div><span>当前可导出</span><strong>{{ quality.exportable_count }}</strong><small>已审核且校验通过</small></div><div><span>扩增样本</span><strong>{{ quality.origins?.augmented || 0 }}</strong><small>原始 {{ quality.origins?.original || 0 }} 条</small></div><div><span>校验失败</span><strong>{{ quality.validations.failed || 0 }}</strong><small>待审核 {{ quality.reviews.pending || 0 }} 条</small></div><div><span>精确重复</span><strong>{{ quality.duplicates }}</strong><small>规范化内容哈希重复</small></div></div>
+    <div class="quality-metrics"><div><span>当前可导出</span><strong>{{ quality.exportable_count }}</strong><small>已审核且校验通过</small></div><div><span>扩增样本</span><strong>{{ quality.origins?.augmented || 0 }}</strong><small>原始 {{ quality.origins?.original || 0 }} 条</small></div><div><span>蒸馏候选</span><strong>{{ quality.origins?.distilled || 0 }}</strong><small>教师升级待审核</small></div><div><span>精确重复</span><strong>{{ quality.duplicates }}</strong><small>规范化内容哈希重复</small></div></div>
     <div class="quality-grid"><div class="quality-panel"><h3>常见校验问题</h3><el-empty v-if="!quality.issues.length" description="没有校验问题" :image-size="48" /><div v-else class="quality-list"><div v-for="issue in quality.issues" :key="issue.rule"><span>{{ issue.rule }}</span><b>{{ issue.count }}</b></div></div></div><div class="quality-panel"><h3>消息长度分布</h3><div class="length-bars"><div v-for="(count, label) in quality.message_lengths" :key="label"><span>{{ label }}</span><i><b :style="{ width: `${Math.min(100, count * 12)}%` }" /></i><em>{{ count }}</em></div></div></div><div class="quality-panel"><h3>来源文档占比</h3><div class="quality-list"><div v-for="source in quality.sources.slice(0, 5)" :key="source.name"><span>{{ source.name }}</span><b>{{ source.count }}</b></div></div></div></div>
   </section>
   <section class="section-card review-card">
@@ -238,9 +276,18 @@ onUnmounted(() => clearTimeout(timer))
     </div>
     <template #footer><div class="augmentation-footer"><span v-if="augmentationPreview">预计最多 {{ augmentationPreview.estimated_requests }} 次模型请求</span><span v-else>先检查种子和策略分配，不会调用模型</span><div><el-button @click="augmentationDialog = false">取消</el-button><el-button :loading="augmentationLoading" @click="previewAugmentation">检查计划</el-button><el-button type="primary" :loading="augmentationLoading" :disabled="!augmentationPreview" @click="startAugmentation">开始扩增</el-button></div></div></template>
   </el-dialog>
+  <el-dialog v-model="distillationDialog" class="augmentation-dialog" width="min(900px, calc(100% - 32px))" destroy-on-close>
+    <template #header><div class="preview-dialog-title"><strong>教师答案升级</strong><span>保留问题、上下文与来源，只升级 assistant 回复；通过审核后才替代原样本。</span></div></template>
+    <div class="augmentation-workbench"><div class="augmentation-controls">
+      <div class="augmentation-block"><h3>选择原始样本</h3><el-select v-model="distillationForm.source_document_ids" multiple clearable collapse-tags placeholder="全部已通过来源"><el-option v-for="source in distillationSources" :key="source.id" :label="source.name" :value="source.id" /></el-select><el-input v-model="distillationForm.keyword" clearable placeholder="按样本内容关键词缩小范围（可选）" /></div>
+      <div class="augmentation-block compact-fields"><el-form label-position="top"><el-form-item label="升级数量"><el-input-number v-model="distillationForm.target_count" :min="1" :max="1000" /></el-form-item><el-form-item label="教师模型"><el-select v-model="distillationForm.model_id" clearable placeholder="工作区默认模型"><el-option v-for="model in distillationModels" :key="model.id" :label="`${model.name} · ${model.model}`" :value="model.id" /></el-select></el-form-item></el-form></div>
+      <div class="augmentation-block"><el-segmented v-model="distillationForm.prompt_mode" :options="[{ label: '使用模板', value: 'template' }, { label: '临时自定义', value: 'custom' }]" style="margin-bottom: 10px" /><el-select v-if="distillationForm.prompt_mode === 'template'" v-model="distillationForm.prompt_id" placeholder="选择蒸馏模板"><el-option v-for="prompt in distillationPrompts" :key="prompt.id" :label="prompt.name" :value="prompt.id" /></el-select><el-input v-else v-model="distillationForm.custom_prompt" type="textarea" :rows="3" placeholder="例如：纠正事实错误，保留专业术语，补足必要依据。" /><p class="field-hint">教师仅返回与原样本等数量的 assistant 回复，user 和 system 消息不会改变。</p></div>
+    </div><aside class="augmentation-ledger"><div><span>计划升级</span><strong>{{ distillationPreview?.target_count || distillationForm.target_count }}</strong><small>条待审核候选</small></div><div><span>合格原样本</span><strong>{{ distillationPreview?.eligible_count ?? '—' }}</strong><small>仅取审核和校验均通过的未替代样本</small></div><div class="augmentation-note"><b>替代规则</b><p>候选通过人工审核后，原样本才会标记为已替代，可随时追溯来源。</p></div></aside></div>
+    <template #footer><div class="augmentation-footer"><span v-if="distillationPreview">预计 {{ distillationPreview.estimated_requests }} 次教师调用</span><span v-else>先检查可升级样本，不会调用模型</span><div><el-button @click="distillationDialog = false">取消</el-button><el-button :loading="distillationLoading" @click="previewDistillation">检查计划</el-button><el-button type="primary" :loading="distillationLoading" :disabled="!distillationPreview" @click="startDistillation">开始升级</el-button></div></div></template>
+  </el-dialog>
   <el-drawer v-model="drawer" :title="`样本 #${detail?.id?.slice(0, 8) || ''}`" size="min(680px, 100%)" class="sample-drawer">
     <template v-if="detail"><div class="drawer-status"><el-tag :type="sampleStatus(detail)[1]" round>{{ sampleStatus(detail)[0] }}</el-tag><span>来源内容块 #{{ detail.chunk_id.slice(0, 8) }}</span><span v-if="detail.parent_sample_id">扩增自样本 #{{ detail.parent_sample_id.slice(0, 8) }}</span></div>
-      <div class="drawer-section"><h3>消息内容</h3><div v-for="(message, index) in messages" :key="index" class="message-card"><div class="message-head"><el-select v-model="message.role"><el-option label="system" value="system" /><el-option label="user" value="user" /><el-option label="assistant" value="assistant" /></el-select><el-button text type="danger" @click="messages.splice(index, 1)">移除</el-button></div><el-input v-model="message.content" type="textarea" :rows="3" /></div><el-button text type="primary" @click="messages.push({ role: 'user', content: '' })">＋ 添加消息</el-button><el-button type="primary" :loading="busy" @click="saveMessages">保存修改</el-button></div>
+      <div class="drawer-section"><h3>消息内容</h3><p v-if="detail.distillation_source_id" class="field-hint">教师升级自样本 #{{ detail.distillation_source_id.slice(0, 8) }}，审核通过后会替代该原样本。</p><div v-for="(message, index) in messages" :key="index" class="message-card"><div class="message-head"><el-select v-model="message.role"><el-option label="system" value="system" /><el-option label="user" value="user" /><el-option label="assistant" value="assistant" /></el-select><el-button text type="danger" @click="messages.splice(index, 1)">移除</el-button></div><el-input v-model="message.content" type="textarea" :rows="3" /></div><el-button text type="primary" @click="messages.push({ role: 'user', content: '' })">＋ 添加消息</el-button><el-button type="primary" :loading="busy" @click="saveMessages">保存修改</el-button></div>
       <div class="drawer-section"><h3>来源内容</h3><pre class="source-preview">{{ detail.chunk_content || '无来源内容' }}</pre></div>
       <div class="drawer-section"><h3>校验结果</h3><el-alert v-if="!detail.issues.length" title="结构与内容校验通过" type="success" :closable="false" show-icon /><el-alert v-for="issue in detail.issues" :key="issue.rule" :title="`${issue.rule}：${issue.message}`" type="warning" :closable="false" class="issue-alert" /></div>
     </template>

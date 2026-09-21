@@ -99,7 +99,7 @@ class WorkspaceService:
 
     @staticmethod
     def _validate_prompt(data: PromptTemplateInput) -> None:
-        valid_mode = data.mode in {"qa", "instruction", "augmentation"}
+        valid_mode = data.mode in {"qa", "instruction", "augmentation", "distillation"}
         if not valid_mode or not data.name.strip() or not data.instruction.strip():
             raise ValueError("提示词名称、类型和内容无效")
 

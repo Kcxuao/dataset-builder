@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from dataset_builder.application.augmentation import AugmentationOptions, AugmentationService
 from dataset_builder.application.build import BuildService
+from dataset_builder.application.distillation import DistillationOptions, DistillationService
 from dataset_builder.application.model_configs import ModelConfigInput, ModelConfigService
 from dataset_builder.application.model_discovery import (
     ModelCatalogFactory,
@@ -35,6 +36,7 @@ from dataset_builder.config import LLMSettings, Settings
 from dataset_builder.db.orm import (
     AugmentationJobRow,
     ChunkRow,
+    DistillationJobRow,
     ExportRecordRow,
     PipelineRunRow,
     ProjectRow,
@@ -57,6 +59,7 @@ ACTIVE_STATUSES = {
     PipelineStatus.CLEANING,
     PipelineStatus.VALIDATING,
     PipelineStatus.AUGMENTING,
+    PipelineStatus.DISTILLING,
 }
 
 
@@ -90,6 +93,16 @@ class AugmentationPayload(BaseModel):
     prompt_id: str | None = None
     custom_prompt: str | None = Field(default=None, max_length=10000)
     multi_turn: bool | None = None
+    model_id: UUID | None = None
+    fingerprint: str | None = None
+
+
+class DistillationPayload(BaseModel):
+    target_count: int = Field(default=100, ge=1, le=1000)
+    keyword: str | None = Field(default=None, max_length=255)
+    source_document_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    prompt_id: str | None = None
+    custom_prompt: str | None = Field(default=None, max_length=10000)
     model_id: UUID | None = None
     fingerprint: str | None = None
 
@@ -202,6 +215,31 @@ async def run_augmentation_in_background(
                 run.finished_at = utc_now()
                 await session.commit()
         logger.error("后台扩增失败：运行编号 %s，详情已写入任务记录", run_id)
+    finally:
+        try:
+            await close_client(client)
+        finally:
+            app.state.active_run_ids.discard(run_id)
+
+
+async def run_distillation_in_background(
+    factory: async_sessionmaker[AsyncSession], client: object, run_id: UUID, app: FastAPI, retry: bool = False
+) -> None:
+    try:
+        service = DistillationService(factory, client)
+        if retry:
+            await service.retry(run_id)
+        else:
+            await service.execute(run_id)
+    except Exception as exc:
+        async with factory() as session:
+            run = await session.get(PipelineRunRow, run_id)
+            if run is not None:
+                run.status = PipelineStatus.FAILED
+                run.error_message = f"{type(exc).__name__}: {exc}"[:500]
+                run.finished_at = utc_now()
+                await session.commit()
+        logger.error("后台蒸馏失败：运行编号 %s，详情已写入任务记录", run_id)
     finally:
         try:
             await close_client(client)
@@ -520,6 +558,29 @@ def create_app(
             model_id=payload.model_id,
         )
 
+    async def distillation_options(
+        project_id: UUID, payload: DistillationPayload, session: AsyncSession
+    ) -> DistillationOptions:
+        target_count = DistillationService.validate_options(payload.target_count)
+        workspace = WorkspaceService(session)
+        if payload.custom_prompt is not None:
+            custom = payload.custom_prompt.strip()
+            if not custom:
+                raise ValueError("自定义提示词不能为空")
+            prompt_text = resolve_prompt("distillation", "custom", custom)
+        elif payload.prompt_id:
+            preset, custom, _ = await workspace.resolve_prompt("distillation", payload.prompt_id)
+            prompt_text = resolve_prompt("distillation", preset, custom)
+        else:
+            prompt_text = resolve_prompt("distillation", "faithful")
+        return DistillationOptions(
+            target_count=target_count,
+            keyword=payload.keyword.strip() if payload.keyword else None,
+            source_document_ids=tuple(dict.fromkeys(payload.source_document_ids)),
+            prompt_text=prompt_text,
+            model_id=payload.model_id,
+        )
+
     @app.get("/api/projects/{project_id}/augmentation-options")
     async def augmentation_source_options(
         project_id: UUID, factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)]
@@ -543,6 +604,61 @@ def create_app(
                 .order_by(SourceDocumentRow.source_name)
             )).all()
             return [{"id": str(row.id), "name": row.source_name} for row in rows]
+
+    @app.post("/api/projects/{project_id}/distillations/preview")
+    async def preview_distillation(
+        project_id: UUID,
+        payload: DistillationPayload,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+    ) -> dict:
+        async with factory() as session:
+            try:
+                options = await distillation_options(project_id, payload, session)
+                preview = await DistillationService(factory, None).preview(project_id, options)  # type: ignore[arg-type]
+                return {
+                    "eligible_count": preview.eligible_count,
+                    "target_count": preview.target_count,
+                    "estimated_requests": preview.target_count,
+                    "fingerprint": preview.fingerprint,
+                }
+            except (ValueError, LookupError) as exc:
+                raise api_error(exc) from exc
+
+    @app.post("/api/projects/{project_id}/distillations", status_code=202)
+    async def start_distillation(
+        project_id: UUID,
+        payload: DistillationPayload,
+        background_tasks: BackgroundTasks,
+        request: Request,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+    ) -> dict:
+        if not payload.fingerprint:
+            raise HTTPException(status_code=422, detail="请先完成蒸馏前检查")
+        async with factory() as session:
+            try:
+                await ProjectService(session).get_active(project_id)
+                active = await session.scalar(select(PipelineRunRow.id).where(
+                    PipelineRunRow.project_id == project_id, PipelineRunRow.status.in_(ACTIVE_STATUSES)
+                ).limit(1))
+                if active:
+                    raise ValueError("当前数据集已有运行中的任务，请等待完成后再蒸馏")
+                workspace = WorkspaceService(session)
+                if payload.model_id is None:
+                    defaults = await workspace.settings()
+                    if defaults["default_model_id"]:
+                        payload.model_id = UUID(str(defaults["default_model_id"]))
+                options = await distillation_options(project_id, payload, session)
+            except (ValueError, LookupError) as exc:
+                raise api_error(exc) from exc
+        client = await selected_client(factory, options.model_id, request.app.state.client_factory)
+        try:
+            run_id = await DistillationService(factory, client).prepare(project_id, options, payload.fingerprint)
+        except (ValueError, LookupError) as exc:
+            await close_client(client)
+            raise api_error(exc) from exc
+        request.app.state.active_run_ids.add(run_id)
+        background_tasks.add_task(run_distillation_in_background, factory, client, run_id, request.app)
+        return {"project_id": project_id, "run_id": run_id}
 
     @app.post("/api/projects/{project_id}/augmentations/preview")
     async def preview_augmentation(
@@ -921,6 +1037,7 @@ def create_app(
             )
             run_type = str(run.configuration.get("run_type", "build"))
             augmentation = None
+            distillation = None
             if run_type == "augmentation":
                 job_rows = (await session.execute(
                     select(AugmentationJobRow.strategy, AugmentationJobRow.status, func.count())
@@ -934,6 +1051,17 @@ def create_app(
                         {"strategy": strategy, "status": status, "count": count}
                         for strategy, status, count in job_rows
                     ],
+                }
+            if run_type == "distillation":
+                job_rows = (await session.execute(
+                    select(DistillationJobRow.status, func.count())
+                    .where(DistillationJobRow.run_id == run.id)
+                    .group_by(DistillationJobRow.status)
+                )).all()
+                failed = []
+                distillation = {
+                    "attempted": sum(count for status, count in job_rows if status != "pending"),
+                    "jobs": [{"status": status, "count": count} for status, count in job_rows],
                 }
             return {
                 "id": str(run.id),
@@ -953,10 +1081,11 @@ def create_app(
                 ],
                 "run_type": run_type,
                 "augmentation": augmentation,
+                "distillation": distillation,
             }
 
     @app.post("/api/runs/{run_id}/retry", status_code=202)
-    async def retry_augmentation(
+    async def retry_background_run(
         run_id: UUID,
         background_tasks: BackgroundTasks,
         request: Request,
@@ -964,10 +1093,11 @@ def create_app(
     ) -> dict:
         async with factory() as session:
             run = await session.get(PipelineRunRow, run_id)
-            if run is None or run.configuration.get("run_type") != "augmentation":
-                raise HTTPException(status_code=404, detail="扩增任务不存在")
+            run_type = run.configuration.get("run_type") if run else None
+            if run_type not in {"augmentation", "distillation"}:
+                raise HTTPException(status_code=404, detail="扩增或蒸馏任务不存在")
             if run.id in request.app.state.active_run_ids:
-                raise HTTPException(status_code=409, detail="扩增任务正在运行")
+                raise HTTPException(status_code=409, detail="任务正在运行")
             try:
                 await ProjectService(session).get_active(run.project_id)
             except LookupError as exc:
@@ -975,7 +1105,8 @@ def create_app(
             model_id = UUID(run.configuration["model_id"]) if run.configuration.get("model_id") else None
         client = await selected_client(factory, model_id, request.app.state.client_factory)
         request.app.state.active_run_ids.add(run_id)
-        background_tasks.add_task(run_augmentation_in_background, factory, client, run_id, request.app, True)
+        runner = run_augmentation_in_background if run_type == "augmentation" else run_distillation_in_background
+        background_tasks.add_task(runner, factory, client, run_id, request.app, True)
         return {"project_id": run.project_id, "run_id": run_id}
 
     @app.get("/api/projects/{project_id}/samples")

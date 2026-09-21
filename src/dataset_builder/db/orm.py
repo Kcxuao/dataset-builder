@@ -180,6 +180,23 @@ class AugmentationJobRow(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class DistillationJobRow(Base):
+    __tablename__ = "distillation_jobs"
+    __table_args__ = (
+        Index("ix_distillation_jobs_run_status", "run_id", "status"),
+        Index("ix_distillation_jobs_source", "source_sample_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("pipeline_runs.id"), index=True)
+    source_sample_id: Mapped[UUID] = mapped_column(ForeignKey("training_samples.id"))
+    candidate_sample_id: Mapped[UUID | None] = mapped_column(ForeignKey("training_samples.id"))
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class ExportRecordRow(Base):
     __tablename__ = "export_records"
 
