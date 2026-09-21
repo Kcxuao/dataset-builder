@@ -51,6 +51,12 @@ const comparisonItems = ref([])
 const comparisonTotal = ref(0)
 const comparisonIndex = ref(0)
 const currentComparison = computed(() => comparisonItems.value[comparisonIndex.value] || null)
+const versionDialog = ref(false)
+const versionLoading = ref(false)
+const versions = ref([])
+const versionForm = reactive({ name: '', description: '' })
+const versionCompare = reactive({ base_id: '', target_id: '' })
+const versionDiff = ref(null)
 let timer = null
 const activeStatuses = new Set(['created', 'importing', 'parsing', 'splitting', 'generating', 'augmenting', 'distilling', 'cleaning', 'validating'])
 const statusNames = { created: '任务已创建', importing: '正在导入', parsing: '正在解析', splitting: '正在切分', generating: '正在生成', augmenting: '正在扩增', distilling: '正在蒸馏', cleaning: '正在清洗', validating: '正在校验', ready_for_review: '等待审核', completed: '处理完成', failed: '构建失败', interrupted: '任务已中断' }
@@ -95,6 +101,7 @@ function diffParts(value, comparison) {
   if (end) parts.push({ text: value.slice(value.length - end), changed: false })
   return parts.filter(part => part.text)
 }
+function formatVersionDate(value) { return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '刚刚' }
 async function loadSamples() {
   loading.value = true
   try {
@@ -249,6 +256,48 @@ async function decideComparison(decision) {
   } catch (error) { notifyError(error, ElMessage) }
   finally { comparisonLoading.value = false }
 }
+async function openVersions() {
+  versionLoading.value = true
+  try {
+    versions.value = await api(`/api/projects/${route.params.id}/versions`)
+    if (!versionCompare.target_id) versionCompare.target_id = versions.value[0]?.id || ''
+    if (!versionCompare.base_id) versionCompare.base_id = versions.value[1]?.id || versions.value[0]?.id || ''
+    versionDiff.value = null
+    versionDialog.value = true
+  } catch (error) { notifyError(error, ElMessage) }
+  finally { versionLoading.value = false }
+}
+async function createVersion() {
+  versionLoading.value = true
+  try {
+    const created = await api(`/api/projects/${route.params.id}/versions`, jsonOptions('POST', versionForm))
+    versions.value.unshift(created)
+    versionForm.name = ''; versionForm.description = ''
+    versionCompare.target_id = created.id
+    if (!versionCompare.base_id) versionCompare.base_id = versions.value[1]?.id || created.id
+    ElMessage.success(`版本 ${created.name} 已创建`)
+  } catch (error) { notifyError(error, ElMessage) }
+  finally { versionLoading.value = false }
+}
+async function compareVersions() {
+  if (!versionCompare.base_id || !versionCompare.target_id || versionCompare.base_id === versionCompare.target_id) return
+  versionLoading.value = true
+  try {
+    const query = new URLSearchParams(versionCompare)
+    versionDiff.value = await api(`/api/projects/${route.params.id}/versions/compare?${query}`)
+  } catch (error) { notifyError(error, ElMessage) }
+  finally { versionLoading.value = false }
+}
+async function exportVersion(version) {
+  versionLoading.value = true
+  try {
+    const result = await api(`/api/versions/${version.id}/exports`, jsonOptions('POST', exportForm))
+    downloadUrl.value = result.download_url
+    ElMessage.success(`版本 ${version.name} 已导出 ${result.sample_count} 条样本`)
+    downloadExport()
+  } catch (error) { notifyError(error, ElMessage) }
+  finally { versionLoading.value = false }
+}
 async function previewAugmentation() {
   augmentationLoading.value = true
   try { augmentationPreview.value = await api(`/api/projects/${route.params.id}/augmentations/preview`, jsonOptions('POST', augmentationPayload())); }
@@ -284,7 +333,7 @@ onUnmounted(() => clearTimeout(timer))
 </script>
 
 <template>
-  <div class="project-actions"><el-button type="primary" :icon="MagicStick" @click="openAugmentation">扩展数据集</el-button><el-button plain :icon="MagicStick" @click="openDistillation">教师答案蒸馏</el-button><el-button plain :icon="Check" @click="openComparisonReview">蒸馏对比审核</el-button><el-button :icon="RefreshRight" @click="reload">刷新</el-button><el-button v-if="run?.failed_items" type="warning" :icon="RefreshRight" @click="retry">{{ run?.run_type === 'augmentation' ? '重试扩增任务' : run?.run_type === 'distillation' ? '重试蒸馏任务' : '重试失败内容块' }}</el-button><el-button type="danger" plain :icon="Delete" @click="trash">移入回收站</el-button></div>
+  <div class="project-actions"><el-button type="primary" :icon="MagicStick" @click="openAugmentation">扩展数据集</el-button><el-button plain :icon="MagicStick" @click="openDistillation">教师答案蒸馏</el-button><el-button plain :icon="Check" @click="openComparisonReview">蒸馏对比审核</el-button><el-button plain @click="openVersions">版本快照</el-button><el-button :icon="RefreshRight" @click="reload">刷新</el-button><el-button v-if="run?.failed_items" type="warning" :icon="RefreshRight" @click="retry">{{ run?.run_type === 'augmentation' ? '重试扩增任务' : run?.run_type === 'distillation' ? '重试蒸馏任务' : '重试失败内容块' }}</el-button><el-button type="danger" plain :icon="Delete" @click="trash">移入回收站</el-button></div>
   <section class="section-card progress-card">
     <div class="section-heading"><div><h2>构建进度</h2><span class="section-subtitle" role="status">{{ statusNames[run?.status] || '正在读取任务状态' }}</span></div><strong class="progress-number">{{ run?.completed_items || 0 }} <span>/ {{ run?.total_items || 0 }}</span></strong></div>
     <el-progress :percentage="progressPercent" :stroke-width="10" :show-text="false" />
@@ -365,6 +414,15 @@ onUnmounted(() => clearTimeout(timer))
       </template>
     </div>
     <template #footer><div v-if="currentComparison" class="comparison-actions"><p><strong>做出版本决策</strong><span>采用教师会替代原样本；两者保留会同时进入可导出数据。</span></p><div><el-button :loading="comparisonLoading" @click="decideComparison('keep_original')">保留原回答</el-button><el-button :loading="comparisonLoading" @click="decideComparison('keep_both')">两者保留</el-button><el-button type="primary" :icon="Check" :loading="comparisonLoading" @click="decideComparison('adopt_teacher')">采用教师回答</el-button></div></div></template>
+  </el-dialog>
+  <el-dialog v-model="versionDialog" class="version-dialog" width="min(1080px, calc(100% - 28px))" destroy-on-close>
+    <template #header><div class="preview-dialog-title"><strong>数据集版本</strong><span>把当前可导出样本冻结为不可变快照，用同一份内容重复导出。</span></div></template>
+    <div v-loading="versionLoading" class="version-workbench">
+      <aside class="version-create"><h3>创建发布快照</h3><p>只收录当前审核通过、校验通过、未删除且未替代的样本。</p><el-input v-model="versionForm.name" maxlength="100" placeholder="版本名称，例如 v1.0" /><el-input v-model="versionForm.description" type="textarea" :rows="3" maxlength="1000" placeholder="说明本次数据变化（可选）" /><el-button type="primary" :disabled="!versionForm.name.trim()" @click="createVersion">冻结当前版本</el-button><div class="version-export-format"><span>版本导出格式</span><el-select v-model="exportForm.format"><el-option label="ShareGPT" value="sharegpt" /><el-option label="Alpaca" value="alpaca" /></el-select><el-select v-model="exportForm.file_type"><el-option label="JSONL" value="jsonl" /><el-option label="JSON" value="json" /></el-select></div></aside>
+      <main class="version-history"><el-empty v-if="!versions.length" description="还没有版本，先冻结当前数据集" :image-size="64" /><div v-else class="version-list"><article v-for="version in versions" :key="version.id"><i /><div><div class="version-name"><strong>{{ version.name }}</strong><span>{{ version.sample_count }} 条</span></div><p>{{ version.description || '未填写版本说明' }}</p><small>{{ formatVersionDate(version.created_at) }} · 原始 {{ version.statistics?.origins?.original || 0 }} / 扩增 {{ version.statistics?.origins?.augmentation || 0 }} / 蒸馏 {{ version.statistics?.origins?.distillation || 0 }}</small></div><el-button text type="primary" @click="exportVersion(version)">导出</el-button></article></div>
+        <section v-if="versions.length > 1" class="version-compare"><header><div><h3>比较版本</h3><p>查看两个不可变快照之间的数据变化。</p></div><el-button :disabled="!versionCompare.base_id || !versionCompare.target_id || versionCompare.base_id === versionCompare.target_id" @click="compareVersions">开始比较</el-button></header><div class="version-selectors"><el-select v-model="versionCompare.base_id" placeholder="基准版本"><el-option v-for="version in versions" :key="version.id" :label="version.name" :value="version.id" /></el-select><span>对比</span><el-select v-model="versionCompare.target_id" placeholder="目标版本"><el-option v-for="version in versions" :key="version.id" :label="version.name" :value="version.id" /></el-select></div><div v-if="versionDiff" class="version-diff"><div><strong>+{{ versionDiff.counts.added }}</strong><span>新增</span></div><div><strong>−{{ versionDiff.counts.removed }}</strong><span>移除</span></div><div><strong>{{ versionDiff.counts.changed }}</strong><span>内容变化</span></div><div><strong>{{ versionDiff.counts.replaced }}</strong><span>蒸馏替代</span></div></div></section>
+      </main>
+    </div>
   </el-dialog>
   <el-drawer v-model="drawer" :title="`样本 #${detail?.id?.slice(0, 8) || ''}`" size="min(680px, 100%)" class="sample-drawer">
     <template v-if="detail"><div class="drawer-status"><el-tag :type="sampleStatus(detail)[1]" round>{{ sampleStatus(detail)[0] }}</el-tag><span>来源内容块 #{{ detail.chunk_id.slice(0, 8) }}</span><span v-if="detail.parent_sample_id">扩增自样本 #{{ detail.parent_sample_id.slice(0, 8) }}</span></div>

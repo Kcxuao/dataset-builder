@@ -3,7 +3,7 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, func, text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -195,6 +195,38 @@ class DistillationJobRow(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class DatasetVersionRow(Base):
+    __tablename__ = "dataset_versions"
+    __table_args__ = (UniqueConstraint("project_id", "name", name="uq_dataset_versions_project_name"),)
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    description: Mapped[str | None] = mapped_column(Text)
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    statistics: Mapped[dict] = mapped_column(JSON_TYPE, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DatasetVersionSampleRow(Base):
+    __tablename__ = "dataset_version_samples"
+    __table_args__ = (
+        UniqueConstraint("version_id", "sample_id", name="uq_dataset_version_samples_version_sample"),
+        Index("ix_dataset_version_samples_version_ordinal", "version_id", "ordinal"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    version_id: Mapped[UUID] = mapped_column(ForeignKey("dataset_versions.id"), index=True)
+    sample_id: Mapped[UUID] = mapped_column(ForeignKey("training_samples.id"))
+    document_id: Mapped[UUID] = mapped_column(ForeignKey("source_documents.id"))
+    chunk_id: Mapped[UUID] = mapped_column(ForeignKey("chunks.id"))
+    ordinal: Mapped[int] = mapped_column(Integer)
+    messages: Mapped[list] = mapped_column(JSON_TYPE)
+    metadata_: Mapped[dict] = mapped_column("metadata", JSON_TYPE, default=dict)
+    content_hash: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class ExportRecordRow(Base):

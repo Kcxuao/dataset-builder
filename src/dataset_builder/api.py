@@ -31,6 +31,7 @@ from dataset_builder.application.projects import ProjectService
 from dataset_builder.application.quality import QualitySummaryService
 from dataset_builder.application.review import ReviewService
 from dataset_builder.application.training_import import TrainingImportService
+from dataset_builder.application.versions import DatasetVersionService
 from dataset_builder.application.workspace import PromptTemplateInput, WorkspaceService, WorkspaceSettingsInput
 from dataset_builder.config import LLMSettings, Settings
 from dataset_builder.db.orm import (
@@ -87,6 +88,11 @@ class BulkPayload(BaseModel):
 class ExportPayload(BaseModel):
     format: ExportFormat
     file_type: ExportFileType
+
+
+class DatasetVersionPayload(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=1000)
 
 
 class AugmentationPayload(BaseModel):
@@ -1316,6 +1322,66 @@ def create_app(
                     project_id, payload.format, payload.file_type, destination
                 )
             except (ValueError, OSError) as exc:
+                await session.commit()
+                raise api_error(exc) from exc
+            await session.commit()
+            return {**record.model_dump(mode="json"), "download_url": f"/api/exports/{record.id}/download"}
+
+    @app.get("/api/projects/{project_id}/versions")
+    async def list_dataset_versions(
+        project_id: UUID,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+    ) -> list[dict]:
+        async with factory() as session:
+            try:
+                return await DatasetVersionService(session).list(project_id)
+            except LookupError as exc:
+                raise api_error(exc) from exc
+
+    @app.post("/api/projects/{project_id}/versions", status_code=201)
+    async def create_dataset_version(
+        project_id: UUID,
+        payload: DatasetVersionPayload,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+    ) -> dict:
+        async with factory() as session:
+            try:
+                result = await DatasetVersionService(session).create(project_id, payload.name, payload.description)
+                await session.commit()
+                return result
+            except (ValueError, LookupError) as exc:
+                raise api_error(exc) from exc
+
+    @app.get("/api/projects/{project_id}/versions/compare")
+    async def compare_dataset_versions(
+        project_id: UUID,
+        base_id: UUID,
+        target_id: UUID,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+    ) -> dict:
+        async with factory() as session:
+            try:
+                return await DatasetVersionService(session).compare(project_id, base_id, target_id)
+            except LookupError as exc:
+                raise api_error(exc) from exc
+
+    @app.post("/api/versions/{version_id}/exports")
+    async def export_dataset_version(
+        version_id: UUID,
+        payload: ExportPayload,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+        directory: Annotated[Path, Depends(export_dir_for)],
+    ) -> dict:
+        destination = directory.resolve() / f"version-{version_id}-{uuid4()}.{payload.file_type.value}"
+        async with factory() as session:
+            try:
+                record = await SampleExportService(session).export_version(
+                    version_id,
+                    payload.format,
+                    payload.file_type,
+                    destination,
+                )
+            except (ValueError, LookupError, OSError) as exc:
                 await session.commit()
                 raise api_error(exc) from exc
             await session.commit()

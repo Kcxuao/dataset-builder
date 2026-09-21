@@ -144,6 +144,10 @@ class Formatter(Protocol):
 
 蒸馏对比审核由 Review 服务统一处理，API 返回候选、原样本和 Chunk 的组合视图。`adopt_teacher` 批准候选并替代原样本，`keep_original` 拒绝候选，`keep_both` 批准候选但保留原样本；决策写入候选 metadata，不新增重复的版本表。
 
+### DatasetVersion / DatasetVersionSample
+
+版本是不可变发布快照。`dataset_versions` 保存项目、名称、说明、样本总数和来源统计；`dataset_version_samples` 按稳定顺序复制样本 messages、metadata、content hash 及文档/Chunk/原样本标识。版本导出只读取快照表，因此后续编辑、删除或替代当前样本不会改变旧版本文件。版本比较以 sample ID 和内容哈希识别新增、移除、变化，并通过蒸馏来源血缘识别替代。
+
 ### ValidationIssue
 
 - id
