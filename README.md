@@ -67,6 +67,18 @@ cd ..
 完成数据库迁移、LLM 配置和前端构建后启动服务：
 
 ```bash
+./web.sh
+```
+
+默认监听 `127.0.0.1:8000`。可以通过环境变量调整监听地址、端口和日志级别，并可在末尾继续传递 Uvicorn 参数：
+
+```bash
+WEB_HOST=0.0.0.0 WEB_PORT=8080 WEB_LOG_LEVEL=info ./web.sh
+```
+
+等价的完整命令为：
+
+```bash
 uv run uvicorn dataset_builder.api:app --host 127.0.0.1 --port 8000 --no-access-log --log-level warning
 ```
 

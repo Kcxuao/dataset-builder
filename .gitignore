@@ -15,3 +15,8 @@ exports/
 
 node_modules/
 src/dataset_builder/web/
+
+*.png
+.playwright-mcp/
+
+*.sqlite3

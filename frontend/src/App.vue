@@ -12,6 +12,8 @@ const mobileMenu = ref(false)
 const mobileMenuButton = ref(null)
 const mobileMenuClose = ref(null)
 const busy = ref(false)
+const projectsLoaded = ref(false)
+let projectsRequest = null
 const headings = {
   '/': ['工作台', '从文档到可审核的训练数据'],
   '/create': ['新建数据集', '导入源文件并开始生成'],
@@ -24,11 +26,17 @@ const heading = computed(() => route.path.startsWith('/projects/')
   ? [projects.value.find(item => item.id === route.params.id)?.name || '数据集', '查看进度、审核样本并导出']
   : headings[route.path] || headings['/'])
 
-async function loadProjects() {
-  busy.value = true
-  try { projects.value = await api('/api/projects') }
+async function loadProjects({ initial = false } = {}) {
+  if (projectsRequest) return projectsRequest
+  if (initial && !projectsLoaded.value) busy.value = true
+  projectsRequest = api('/api/projects')
+  try { projects.value = await projectsRequest }
   catch (error) { notifyError(error, ElMessage) }
-  finally { busy.value = false }
+  finally {
+    projectsRequest = null
+    projectsLoaded.value = true
+    if (initial) busy.value = false
+  }
 }
 function navigate(path) { mobileMenu.value = false; router.push(path) }
 async function openMobileMenu() { mobileMenu.value = true; await nextTick(); mobileMenuClose.value?.focus() }
@@ -36,8 +44,8 @@ function closeMobileMenu() { mobileMenu.value = false; mobileMenuButton.value?.f
 function closeMenuOnEscape(event) { if (event.key === 'Escape' && mobileMenu.value) closeMobileMenu() }
 provide('refreshProjects', loadProjects)
 provide('projects', projects)
-watch(() => route.fullPath, () => { mobileMenu.value = false; loadProjects() })
-onMounted(loadProjects)
+watch(() => route.fullPath, () => { mobileMenu.value = false })
+onMounted(() => loadProjects({ initial: true }))
 </script>
 
 <template>
@@ -54,7 +62,10 @@ onMounted(loadProjects)
         <button :class="{ active: route.path === '/create' }" @click="navigate('/create')"><el-icon><Plus /></el-icon>新建数据集</button>
       </nav>
       <div class="nav-caption nav-caption-projects">数据集 <span>{{ projects.length }}</span></div>
-      <div v-loading="busy" class="project-nav">
+      <div class="project-nav" :aria-busy="busy">
+        <div v-if="busy && !projects.length" class="nav-skeleton" aria-label="正在加载数据集">
+          <span v-for="index in 3" :key="index"><i /><b /></span>
+        </div>
         <button v-for="project in projects" :key="project.id" :class="{ active: route.path === `/projects/${project.id}` }" @click="navigate(`/projects/${project.id}`)">
           <el-icon><Collection /></el-icon><span>{{ project.name }}</span><el-icon class="nav-arrow"><ArrowRight /></el-icon>
         </button>

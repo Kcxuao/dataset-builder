@@ -388,7 +388,7 @@ onUnmounted(() => clearTimeout(timer))
     </div>
     <el-empty v-if="!loading && !samples.length" :description="activeStatuses.has(run?.status) ? '正在生成样本，完成后会在这里显示' : '当前没有样本可审核'" />
     <el-table v-else v-loading="loading" :data="samples" class="samples-table" stripe @row-click="openDetail">
-      <el-table-column label="样本内容" min-width="340"><template #default="{ row }"><div class="sample-title">{{ excerpt(row) }}</div><small class="sample-id">#{{ row.id.slice(0, 8) }} · {{ row.messages.length }} 条消息</small></template></el-table-column>
+      <el-table-column label="样本内容" min-width="340"><template #default="{ row }"><div class="sample-title">{{ excerpt(row) }}</div><small class="sample-id">#{{ row.id.slice(0, 8) }} · {{ row.messages.length }} 条消息</small><div class="mobile-sample-tags"><el-tag :type="row.validation_status === 'passed' ? 'success' : 'danger'" effect="plain" round>{{ row.validation_status === 'passed' ? '校验通过' : '校验失败' }}</el-tag><el-tag :type="sampleStatus(row)[1]" effect="light" round>{{ sampleStatus(row)[0] }}</el-tag></div></template></el-table-column>
       <el-table-column label="校验" width="110"><template #default="{ row }"><el-tag :type="row.validation_status === 'passed' ? 'success' : 'danger'" effect="plain" round>{{ row.validation_status === 'passed' ? '通过' : '失败' }}</el-tag></template></el-table-column>
       <el-table-column label="状态" width="120"><template #default="{ row }"><el-tag :type="sampleStatus(row)[1]" effect="light" round>{{ sampleStatus(row)[0] }}</el-tag></template></el-table-column>
       <el-table-column label="操作" width="90"><template #default="{ row }"><el-button text type="primary" @click.stop="openDetail(row)">查看</el-button></template></el-table-column>
