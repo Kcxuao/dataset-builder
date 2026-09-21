@@ -197,5 +197,7 @@ class ReviewService:
             "validation_status": row.validation_status,
             "is_deleted": row.is_deleted,
             "superseded_at": row.superseded_at,
+            "parent_sample_id": str(row.parent_sample_id) if row.parent_sample_id else None,
+            "generation_run_id": str(row.generation_run_id) if row.generation_run_id else None,
             "issues": [{"rule": issue.rule, "severity": issue.severity, "message": issue.message} for issue in issues],
         }

@@ -11,7 +11,7 @@ Application Services / Pipeline
       ↓
 Domain Models + Core Interfaces
       ↓
-Parser → Splitter → Generator → Cleaner → Validator
+Parser → Splitter → Generator / Augmentation → Cleaner → Validator
       ↓
 Review
       ↓
@@ -117,6 +117,20 @@ class Formatter(Protocol):
 - is_deleted
 - created_at
 - updated_at
+- parent_sample_id（扩增样本的父样本，可空）
+- generation_run_id（生成或扩增任务，可空）
+
+### AugmentationJob
+
+- run_id
+- seed_sample_id
+- strategy
+- round
+- status
+- generated_count
+- error_message
+
+扩增由独立应用服务编排，不改变原始文件构建链路。每个 Job 只扩增一个已通过种子样本，任务可在失败后仅重试未完成 Job；结果通过统一 Cleaner 和 Validator 后才作为待审核样本写入。
 
 ### ValidationIssue
 

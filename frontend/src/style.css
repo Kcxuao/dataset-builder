@@ -111,6 +111,38 @@ button:focus-visible, a:focus-visible, .upload-zone:focus-within { outline: 3px 
 .preview-dialog-title strong, .preview-dialog-title span { display: block; }
 .preview-dialog-title strong { color: #1b2e50; font-size: 18px; letter-spacing: -.025em; }
 .preview-dialog-title span { margin-top: 5px; color: var(--text-muted); font-size: 12px; }
+.augmentation-dialog { max-width: 980px; }
+.augmentation-dialog .el-dialog__header { margin-right: 0; padding: 22px 25px 18px; border-bottom: 1px solid #e4eaf4; }
+.augmentation-dialog .el-dialog__body { padding: 0; background: #f8faff; }
+.augmentation-workbench { display: grid; grid-template-columns: minmax(0, 1.42fr) minmax(260px, .78fr); }
+.augmentation-controls { padding: 24px 26px 27px; background: #fff; }
+.augmentation-block { padding: 0 0 20px; margin-bottom: 20px; border-bottom: 1px solid #eaf0f7; }
+.augmentation-block:last-child { padding-bottom: 0; margin-bottom: 0; border-bottom: 0; }
+.augmentation-block h3, .strategy-ledger h3 { margin: 0 0 11px; color: #29446d; font-size: 13px; font-weight: 700; }
+.augmentation-block .el-select, .augmentation-block .el-input { width: 100%; margin-bottom: 9px; }
+.strategy-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.strategy-options .el-checkbox { display: grid; grid-template-columns: 18px 1fr; align-items: start; height: auto; min-height: 62px; margin: 0; padding: 11px 12px; border: 1px solid #dce6f3; border-radius: 9px; color: #26446d; line-height: 1.3; }
+.strategy-options .el-checkbox.is-checked { border-color: #8ba8e8; background: #f4f7ff; }
+.strategy-options .el-checkbox__label { padding-left: 7px; white-space: normal; }
+.strategy-options small { display: block; margin-top: 4px; color: #7e8da3; font-size: 11px; line-height: 1.45; }
+.compact-fields .el-form { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+.compact-fields .el-form-item { margin-bottom: 0; }
+.compact-fields .el-select { margin-bottom: 0; }
+.augmentation-ledger { padding: 27px 25px; background: #edf3fc; color: #28446b; }
+.augmentation-ledger > div:first-child, .augmentation-ledger > div:nth-child(2) { padding: 0 0 18px; margin-bottom: 18px; border-bottom: 1px solid #d6e2f2; }
+.augmentation-ledger span, .augmentation-ledger small { display: block; }
+.augmentation-ledger span { color: #70839f; font-size: 12px; }
+.augmentation-ledger strong { display: block; margin: 4px 0 2px; color: #15345d; font-size: 32px; letter-spacing: -.04em; }
+.augmentation-ledger small { color: #7e8ea6; font-size: 11px; line-height: 1.45; }
+.strategy-ledger p { display: flex; justify-content: space-between; margin: 0; padding: 8px 0; border-bottom: 1px solid #dce6f3; font-size: 12px; }
+.strategy-ledger p span { color: #4f6688; }
+.strategy-ledger p b { color: #254a7d; }
+.augmentation-note { margin-top: 22px; padding: 13px 14px; border-left: 3px solid #7193dc; background: #f8fbff; }
+.augmentation-note b { font-size: 12px; color: #315889; }
+.augmentation-note p { margin: 5px 0 0; color: #73839b; font-size: 11px; line-height: 1.6; }
+.augmentation-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 4px 0; color: #70819a; font-size: 12px; }
+.augmentation-footer > div { display: flex; gap: 8px; }
+.training-import-body { display: grid; gap: 18px; }.training-import-body > label:first-child { display: grid; gap: 8px; color: #304565; font-size: 13px; font-weight: 650; }.training-dropzone { min-height: 144px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; border: 1.5px dashed #aebee3; border-radius: 12px; background: #f7f9fe; color: #3655ba; cursor: pointer; }.training-dropzone:hover { border-color: #5976df; background: #f1f4ff; }.training-dropzone input { position: absolute; width: 1px; height: 1px; opacity: 0; }.training-dropzone span { color: var(--text-muted); font-size: 12px; }.training-file-list { display: grid; gap: 6px; max-height: 110px; overflow: auto; }.training-file-list span { padding: 8px 10px; border-radius: 7px; color: #49617f; background: #f1f4f9; font-size: 12px; }
 .generation-preview, .trial-results { border: 1px solid #dbe4f2; border-radius: 14px; overflow: hidden; background: #fbfcff; }
 .trial-results { margin-top: 16px; }
 .preview-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 20px 22px 17px; border-bottom: 1px solid #e5ebf5; background: #fff; }
@@ -245,3 +277,4 @@ button:focus-visible, a:focus-visible, .upload-zone:focus-within { outline: 3px 
   .topbar-right .el-button span { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition-duration: 0s !important; animation-duration: 0s !important; } }
+@media (max-width: 700px) { .augmentation-workbench { grid-template-columns: 1fr; } .augmentation-ledger { order: -1; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 18px; } .augmentation-ledger > div:first-child, .augmentation-ledger > div:nth-child(2) { padding: 0; margin: 0; border: 0; } .strategy-ledger, .augmentation-note { grid-column: 1 / -1; } .compact-fields .el-form, .strategy-options { grid-template-columns: 1fr; } .augmentation-footer { align-items: stretch; flex-direction: column; } .augmentation-footer > div { width: 100%; } .augmentation-footer .el-button { flex: 1; } }

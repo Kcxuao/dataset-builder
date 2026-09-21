@@ -54,6 +54,7 @@ class PipelineStatus(StrEnum):
     GENERATING = "generating"
     CLEANING = "cleaning"
     VALIDATING = "validating"
+    AUGMENTING = "augmenting"
     READY_FOR_REVIEW = "ready_for_review"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -113,6 +114,8 @@ class TrainingSample(BaseModel):
     review_status: ReviewStatus = ReviewStatus.PENDING
     validation_status: ValidationStatus = ValidationStatus.PENDING
     is_deleted: bool = False
+    parent_sample_id: UUID | None = None
+    generation_run_id: UUID | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

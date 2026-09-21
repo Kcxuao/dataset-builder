@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from dataset_builder.application.augmentation import AugmentationOptions, AugmentationService
 from dataset_builder.application.build import BuildService
 from dataset_builder.application.model_configs import ModelConfigInput, ModelConfigService
 from dataset_builder.application.model_discovery import (
@@ -28,9 +29,11 @@ from dataset_builder.application.model_discovery import (
 from dataset_builder.application.projects import ProjectService
 from dataset_builder.application.quality import QualitySummaryService
 from dataset_builder.application.review import ReviewService
+from dataset_builder.application.training_import import TrainingImportService
 from dataset_builder.application.workspace import PromptTemplateInput, WorkspaceService, WorkspaceSettingsInput
 from dataset_builder.config import LLMSettings, Settings
 from dataset_builder.db.orm import (
+    AugmentationJobRow,
     ChunkRow,
     ExportRecordRow,
     PipelineRunRow,
@@ -53,6 +56,7 @@ ACTIVE_STATUSES = {
     PipelineStatus.GENERATING,
     PipelineStatus.CLEANING,
     PipelineStatus.VALIDATING,
+    PipelineStatus.AUGMENTING,
 }
 
 
@@ -76,6 +80,17 @@ class BulkPayload(BaseModel):
 class ExportPayload(BaseModel):
     format: ExportFormat
     file_type: ExportFileType
+
+
+class AugmentationPayload(BaseModel):
+    strategies: list[str] = Field(min_length=1, max_length=5)
+    target_count: int = Field(default=100, ge=1, le=1000)
+    keyword: str | None = Field(default=None, max_length=255)
+    source_document_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    prompt_id: str | None = None
+    custom_prompt: str | None = Field(default=None, max_length=10000)
+    model_id: UUID | None = None
+    fingerprint: str | None = None
 
 
 def upload_filename(file: UploadFile) -> str:
@@ -161,6 +176,31 @@ async def run_retry_in_background(
                 run.finished_at = utc_now()
                 await session.commit()
         logger.error("后台重试失败：运行编号 %s，详情已写入任务记录", run_id)
+    finally:
+        try:
+            await close_client(client)
+        finally:
+            app.state.active_run_ids.discard(run_id)
+
+
+async def run_augmentation_in_background(
+    factory: async_sessionmaker[AsyncSession], client: object, run_id: UUID, app: FastAPI, retry: bool = False
+) -> None:
+    try:
+        service = AugmentationService(factory, client)
+        if retry:
+            await service.retry(run_id)
+        else:
+            await service.execute(run_id)
+    except Exception as exc:
+        async with factory() as session:
+            run = await session.get(PipelineRunRow, run_id)
+            if run is not None:
+                run.status = PipelineStatus.FAILED
+                run.error_message = f"{type(exc).__name__}: {exc}"[:500]
+                run.finished_at = utc_now()
+                await session.commit()
+        logger.error("后台扩增失败：运行编号 %s，详情已写入任务记录", run_id)
     finally:
         try:
             await close_client(client)
@@ -440,6 +480,112 @@ def create_app(
     async def prompt_presets() -> dict[str, list[dict[str, str]]]:
         return list_prompt_presets()
 
+    async def augmentation_options(
+        project_id: UUID, payload: AugmentationPayload, session: AsyncSession
+    ) -> AugmentationOptions:
+        strategies = AugmentationService.validate_options(payload.strategies, payload.target_count)
+        workspace = WorkspaceService(session)
+        if payload.custom_prompt is not None:
+            custom = payload.custom_prompt.strip()
+            if not custom:
+                raise ValueError("自定义提示词不能为空")
+            from dataset_builder.generators.prompts import resolve_prompt
+            prompt_text = resolve_prompt("augmentation", "custom", custom)
+        elif payload.prompt_id:
+            _, prompt_text = await workspace.resolve_prompt("augmentation", payload.prompt_id)
+        else:
+            from dataset_builder.generators.prompts import resolve_prompt
+            prompt_text = resolve_prompt("augmentation", "balanced")
+        return AugmentationOptions(
+            strategies=strategies,
+            target_count=payload.target_count,
+            keyword=payload.keyword.strip() if payload.keyword else None,
+            source_document_ids=tuple(dict.fromkeys(payload.source_document_ids)),
+            prompt_text=prompt_text,
+            model_id=payload.model_id,
+        )
+
+    @app.get("/api/projects/{project_id}/augmentation-options")
+    async def augmentation_source_options(
+        project_id: UUID, factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)]
+    ) -> list[dict[str, str]]:
+        async with factory() as session:
+            try:
+                await ProjectService(session).get_active(project_id)
+            except LookupError as exc:
+                raise api_error(exc) from exc
+            rows = (await session.execute(
+                select(SourceDocumentRow.id, SourceDocumentRow.source_name)
+                .join(TrainingSampleRow, TrainingSampleRow.document_id == SourceDocumentRow.id)
+                .where(
+                    TrainingSampleRow.project_id == project_id,
+                    TrainingSampleRow.review_status == "approved",
+                    TrainingSampleRow.validation_status == "passed",
+                    TrainingSampleRow.is_deleted.is_(False),
+                    TrainingSampleRow.superseded_at.is_(None),
+                )
+                .distinct()
+                .order_by(SourceDocumentRow.source_name)
+            )).all()
+            return [{"id": str(row.id), "name": row.source_name} for row in rows]
+
+    @app.post("/api/projects/{project_id}/augmentations/preview")
+    async def preview_augmentation(
+        project_id: UUID,
+        payload: AugmentationPayload,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+    ) -> dict:
+        async with factory() as session:
+            try:
+                options = await augmentation_options(project_id, payload, session)
+                preview = await AugmentationService(factory, None).preview(project_id, options)  # type: ignore[arg-type]
+                return {
+                    "eligible_count": preview.eligible_count,
+                    "target_count": preview.target_count,
+                    "max_attempts": preview.max_attempts,
+                    "estimated_requests": preview.max_attempts,
+                    "distribution": preview.distribution,
+                    "fingerprint": preview.fingerprint,
+                }
+            except (ValueError, LookupError) as exc:
+                raise api_error(exc) from exc
+
+    @app.post("/api/projects/{project_id}/augmentations", status_code=202)
+    async def start_augmentation(
+        project_id: UUID,
+        payload: AugmentationPayload,
+        background_tasks: BackgroundTasks,
+        request: Request,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+    ) -> dict:
+        if not payload.fingerprint:
+            raise HTTPException(status_code=422, detail="请先完成扩增前检查")
+        async with factory() as session:
+            try:
+                await ProjectService(session).get_active(project_id)
+                active = await session.scalar(select(PipelineRunRow.id).where(
+                    PipelineRunRow.project_id == project_id, PipelineRunRow.status.in_(ACTIVE_STATUSES)
+                ).limit(1))
+                if active:
+                    raise ValueError("当前数据集已有运行中的任务，请等待完成后再扩增")
+                workspace = WorkspaceService(session)
+                if payload.model_id is None:
+                    defaults = await workspace.settings()
+                    if defaults["default_model_id"]:
+                        payload.model_id = UUID(str(defaults["default_model_id"]))
+                options = await augmentation_options(project_id, payload, session)
+            except (ValueError, LookupError) as exc:
+                raise api_error(exc) from exc
+        client = await selected_client(factory, options.model_id, request.app.state.client_factory)
+        try:
+            run_id = await AugmentationService(factory, client).prepare(project_id, options, payload.fingerprint)
+        except (ValueError, LookupError) as exc:
+            await close_client(client)
+            raise api_error(exc) from exc
+        request.app.state.active_run_ids.add(run_id)
+        background_tasks.add_task(run_augmentation_in_background, factory, client, run_id, request.app)
+        return {"project_id": project_id, "run_id": run_id}
+
     @app.post("/api/projects/build", status_code=202)
     async def build_project(
         file: Annotated[UploadFile, File()],
@@ -507,6 +653,21 @@ def create_app(
             run_build_in_background, factory, client, summary.run_id, path, temporary, request.app
         )
         return {"project_id": summary.project_id, "run_id": summary.run_id}
+
+    @app.post("/api/projects/import-training", status_code=201)
+    async def import_training(
+        files: Annotated[list[UploadFile], File()],
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+        project_name: Annotated[str, Form()] = "导入训练样本",
+    ) -> dict:
+        try:
+            payload = [(upload_filename(file), await file.read()) for file in files]
+            async with factory() as session:
+                result = await TrainingImportService(session).import_files(payload, project_name)
+                await session.commit()
+                return result
+        except (ValueError, OSError) as exc:
+            raise api_error(exc) from exc
 
     @app.post("/api/projects/preview")
     async def preview_project(
@@ -723,6 +884,22 @@ def create_app(
             sample_count = await session.scalar(
                 select(func.count(TrainingSampleRow.id)).where(TrainingSampleRow.project_id == run.project_id)
             )
+            run_type = str(run.configuration.get("run_type", "build"))
+            augmentation = None
+            if run_type == "augmentation":
+                job_rows = (await session.execute(
+                    select(AugmentationJobRow.strategy, AugmentationJobRow.status, func.count())
+                    .where(AugmentationJobRow.run_id == run.id)
+                    .group_by(AugmentationJobRow.strategy, AugmentationJobRow.status)
+                )).all()
+                failed = []
+                augmentation = {
+                    "attempted": sum(count for _, status, count in job_rows if status != "pending"),
+                    "strategies": [
+                        {"strategy": strategy, "status": status, "count": count}
+                        for strategy, status, count in job_rows
+                    ],
+                }
             return {
                 "id": str(run.id),
                 "project_id": str(run.project_id),
@@ -739,7 +916,32 @@ def create_app(
                     {"id": str(chunk.id), "error": chunk.metadata_.get("generation_error", "生成失败")}
                     for chunk in failed
                 ],
+                "run_type": run_type,
+                "augmentation": augmentation,
             }
+
+    @app.post("/api/runs/{run_id}/retry", status_code=202)
+    async def retry_augmentation(
+        run_id: UUID,
+        background_tasks: BackgroundTasks,
+        request: Request,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+    ) -> dict:
+        async with factory() as session:
+            run = await session.get(PipelineRunRow, run_id)
+            if run is None or run.configuration.get("run_type") != "augmentation":
+                raise HTTPException(status_code=404, detail="扩增任务不存在")
+            if run.id in request.app.state.active_run_ids:
+                raise HTTPException(status_code=409, detail="扩增任务正在运行")
+            try:
+                await ProjectService(session).get_active(run.project_id)
+            except LookupError as exc:
+                raise api_error(exc) from exc
+            model_id = UUID(run.configuration["model_id"]) if run.configuration.get("model_id") else None
+        client = await selected_client(factory, model_id, request.app.state.client_factory)
+        request.app.state.active_run_ids.add(run_id)
+        background_tasks.add_task(run_augmentation_in_background, factory, client, run_id, request.app, True)
+        return {"project_id": run.project_id, "run_id": run_id}
 
     @app.get("/api/projects/{project_id}/samples")
     async def list_samples(

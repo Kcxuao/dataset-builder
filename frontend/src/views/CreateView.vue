@@ -15,6 +15,10 @@ const submitting = ref(false)
 const previewing = ref(false)
 const trialing = ref(false)
 const previewDialogVisible = ref(false)
+const trainingImportVisible = ref(false)
+const trainingFiles = ref([])
+const importing = ref(false)
+const importName = ref('')
 const preview = ref(null)
 const trial = ref(null)
 const selectedChunks = ref([])
@@ -94,6 +98,20 @@ async function submit() {
   } catch (error) { notifyError(error, ElMessage) }
   finally { submitting.value = false }
 }
+function selectTrainingFiles(event) { trainingFiles.value = [...(event.target.files || [])] }
+async function importTraining() {
+  if (!trainingFiles.value.length) { ElMessage.warning('请选择 Alpaca 或 ShareGPT 文件'); return }
+  importing.value = true
+  try {
+    const data = new FormData()
+    data.append('project_name', importName.value || '导入训练样本')
+    trainingFiles.value.forEach(file => data.append('files', file))
+    const result = await api('/api/projects/import-training', { method: 'POST', body: data })
+    await refreshProjects(); trainingImportVisible.value = false
+    router.push(`/projects/${result.project_id}`)
+  } catch (error) { notifyError(error, ElMessage) }
+  finally { importing.value = false }
+}
 watch(form, clearPreview, { deep: true })
 onMounted(load)
 </script>
@@ -101,7 +119,7 @@ onMounted(load)
 <template>
   <div class="create-layout">
     <section class="section-card create-card">
-      <div class="section-heading"><div><h2>导入与生成</h2><span class="section-subtitle">选择来源文件，再设置生成与切分方式</span></div></div>
+      <div class="section-heading"><div><h2>导入与生成</h2><span class="section-subtitle">选择来源文件，再设置生成与切分方式</span></div><el-button plain @click="trainingImportVisible = true">导入已有训练样本</el-button></div>
       <el-form label-position="top" class="create-form" @submit.prevent="submit">
         <h3 class="form-group-title">来源文件</h3>
         <el-form-item label="源文件" required>
@@ -160,6 +178,11 @@ onMounted(load)
           <div v-if="trial.issues.length" class="trial-issues"><el-alert v-for="issue in trial.issues" :key="issue.id" type="warning" :title="issue.message" :closable="false" show-icon /></div>
         </section>
       </div>
+    </el-dialog>
+    <el-dialog v-model="trainingImportVisible" class="training-import-dialog" width="580px">
+      <template #header><div class="preview-dialog-title"><strong>导入已有训练样本</strong><span>支持 Alpaca、ShareGPT 的 JSON 与 JSONL；导入后仍需人工审核。</span></div></template>
+      <div class="training-import-body"><label>数据集名称<el-input v-model="importName" placeholder="例如：客服问答历史数据" /></label><label class="training-dropzone"><input type="file" accept=".json,.jsonl" multiple @change="selectTrainingFiles" /><strong>{{ trainingFiles.length ? `已选择 ${trainingFiles.length} 个文件` : '选择训练样本文件' }}</strong><span>仅支持 JSON、JSONL，单次可选择多个文件</span></label><div v-if="trainingFiles.length" class="training-file-list"><span v-for="file in trainingFiles" :key="file.name">{{ file.name }}</span></div></div>
+      <template #footer><el-button @click="trainingImportVisible = false">取消</el-button><el-button type="primary" :loading="importing" @click="importTraining">导入并进入审核</el-button></template>
     </el-dialog>
   </div>
 </template>

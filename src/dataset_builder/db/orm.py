@@ -93,6 +93,8 @@ class TrainingSampleRow(Base):
     __table_args__ = (
         Index("ix_training_samples_export", "project_id", "review_status", "validation_status", "is_deleted"),
         Index("ix_training_samples_dedupe", "project_id", "content_hash"),
+        Index("ix_training_samples_parent", "parent_sample_id"),
+        Index("ix_training_samples_generation_run", "generation_run_id"),
         Index(
             "ix_training_samples_search",
             "project_id",
@@ -113,6 +115,8 @@ class TrainingSampleRow(Base):
     review_status: Mapped[str] = mapped_column(String(32), default="pending")
     validation_status: Mapped[str] = mapped_column(String(32), default="pending")
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    parent_sample_id: Mapped[UUID | None] = mapped_column(ForeignKey("training_samples.id"))
+    generation_run_id: Mapped[UUID | None] = mapped_column(ForeignKey("pipeline_runs.id"))
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -144,6 +148,25 @@ class PipelineRunRow(Base):
     failed_items: Mapped[int] = mapped_column(Integer, default=0)
     error_message: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AugmentationJobRow(Base):
+    __tablename__ = "augmentation_jobs"
+    __table_args__ = (
+        Index("ix_augmentation_jobs_run_status", "run_id", "status"),
+        Index("ix_augmentation_jobs_seed", "seed_sample_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("pipeline_runs.id"), index=True)
+    seed_sample_id: Mapped[UUID] = mapped_column(ForeignKey("training_samples.id"))
+    strategy: Mapped[str] = mapped_column(String(64))
+    round: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    generated_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 

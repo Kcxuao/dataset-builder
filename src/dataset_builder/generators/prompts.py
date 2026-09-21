@@ -5,6 +5,11 @@ INSTRUCTION_FORMAT = (
     '只返回一个 json 对象，不要解释或代码块，格式为 '
     '{"items": [{"instruction": "...", "response": "..."}]}。'
 )
+AUGMENTATION_FORMAT = (
+    '只返回一个 json 对象，不要解释或代码块，格式为 '
+    '{"items": [{"messages": [{"role": "user", "content": "..."}, '
+    '{"role": "assistant", "content": "..."}]}]}。'
+)
 
 PROMPT_PRESETS = {
     "qa": [
@@ -16,6 +21,18 @@ PROMPT_PRESETS = {
         {"id": "default", "name": "标准指令", "instruction": "根据提供的文本生成一个或多个可由文本支持的指令与回答。"},
         {"id": "concise", "name": "简洁指令", "instruction": "根据文本生成一条明确、简短的任务指令和对应回答。"},
         {"id": "detailed", "name": "详细指令", "instruction": "生成两到三条不同任务的指令与完整回答，严格依据原文。"},
+    ],
+    "augmentation": [
+        {
+            "id": "balanced",
+            "name": "平衡扩增",
+            "instruction": "严格依据种子样本与来源内容，生成有明显差异的新训练样本。",
+        },
+        {
+            "id": "precise",
+            "name": "事实优先",
+            "instruction": "只表达来源中可验证的信息；信息不足时不要补充或猜测。",
+        },
     ],
 }
 
@@ -39,4 +56,5 @@ def resolve_prompt(mode: str, preset: str = "default", custom_prompt: str | None
         if selected is None:
             raise ValueError("提示词预设不存在")
         instruction = selected["instruction"]
-    return instruction + "\n" + (QA_FORMAT if mode == "qa" else INSTRUCTION_FORMAT)
+    output_format = QA_FORMAT if mode == "qa" else INSTRUCTION_FORMAT if mode == "instruction" else AUGMENTATION_FORMAT
+    return instruction + "\n" + output_format

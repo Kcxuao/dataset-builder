@@ -80,6 +80,16 @@ class QualitySummaryService:
                 TrainingSampleRow.validation_status == "passed",
             )
         )
+        original_count = await self.session.scalar(
+            select(func.count())
+            .select_from(TrainingSampleRow)
+            .where(*sample_conditions, TrainingSampleRow.parent_sample_id.is_(None))
+        )
+        augmented_count = await self.session.scalar(
+            select(func.count())
+            .select_from(TrainingSampleRow)
+            .where(*sample_conditions, TrainingSampleRow.parent_sample_id.is_not(None))
+        )
         chunks = Counter({status: count for status, count in chunk_rows})
         reviews = Counter()
         validations = Counter()
@@ -96,4 +106,5 @@ class QualitySummaryService:
             "message_lengths": buckets,
             "sources": [{"name": name, "count": count} for name, count in source_rows],
             "exportable_count": exportable_count or 0,
+            "origins": {"original": original_count or 0, "augmented": augmented_count or 0},
         }
