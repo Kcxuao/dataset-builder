@@ -1,8 +1,10 @@
-"""Upgrade approved answers with a teacher model while retaining source lineage."""
+"""Regenerate approved answers independently with a teacher model."""
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass
+from time import perf_counter
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
@@ -17,20 +19,23 @@ from dataset_builder.db.orm import (
     ProjectRow,
     TrainingSampleRow,
 )
+from dataset_builder.generators.prompts import DISTILLATION_FORMAT
 from dataset_builder.llm import LLMClient, QuotaExceededError
 from dataset_builder.models import Message, MessageRole, PipelineStatus, TrainingSample, utc_now
 from dataset_builder.validators import SampleValidator
 
+logger = logging.getLogger(__name__)
+
 
 class DistillationResponse(BaseModel):
-    assistant_messages: list[str] = Field(min_length=1)
+    answer: str = Field(min_length=1)
 
-    @field_validator("assistant_messages")
+    @field_validator("answer")
     @classmethod
-    def nonblank(cls, values: list[str]) -> list[str]:
-        cleaned = [value.strip() for value in values]
-        if any(not value for value in cleaned):
-            raise ValueError("assistant_messages 不能包含空回复")
+    def nonblank(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("answer 不能为空")
         return cleaned
 
 
@@ -47,6 +52,7 @@ class DistillationOptions:
 class DistillationPreview:
     eligible_count: int
     target_count: int
+    estimated_requests: int
     fingerprint: str
 
 
@@ -68,7 +74,16 @@ class DistillationService:
         if not seeds:
             raise ValueError("没有符合条件的已通过样本；请调整来源或关键词筛选")
         target = min(options.target_count, len(seeds))
-        return DistillationPreview(len(seeds), target, self._fingerprint(seeds[:target], options))
+        selected = seeds[:target]
+        estimated_requests = sum(
+            message["role"] == MessageRole.ASSISTANT for seed in selected for message in seed.messages
+        )
+        return DistillationPreview(
+            eligible_count=len(seeds),
+            target_count=target,
+            estimated_requests=estimated_requests,
+            fingerprint=self._fingerprint(selected, options),
+        )
 
     async def prepare(self, project_id: UUID, options: DistillationOptions, fingerprint: str) -> UUID:
         seeds = (await self._seeds(project_id, options))[: options.target_count]
@@ -90,6 +105,9 @@ class DistillationService:
                 configuration={
                     "run_type": "distillation",
                     "target_count": options.target_count,
+                    "estimated_requests": sum(
+                        message["role"] == MessageRole.ASSISTANT for seed in seeds for message in seed.messages
+                    ),
                     "keyword": options.keyword,
                     "source_document_ids": [str(value) for value in options.source_document_ids],
                     "prompt_text": options.prompt_text,
@@ -101,9 +119,17 @@ class DistillationService:
             await session.flush()
             session.add_all(DistillationJobRow(run_id=run_id, source_sample_id=seed.id) for seed in seeds)
             await session.commit()
+        logger.info(
+            "已创建教师蒸馏任务：运行编号 %s，项目编号 %s，原样本 %d 条，预计模型请求 %d 次",
+            run_id,
+            project_id,
+            len(seeds),
+            sum(message["role"] == MessageRole.ASSISTANT for seed in seeds for message in seed.messages),
+        )
         return run_id
 
     async def execute(self, run_id: UUID) -> None:
+        started_at = perf_counter()
         await self._set_running(run_id)
         while True:
             async with self.sessions() as session:
@@ -117,21 +143,43 @@ class DistillationService:
                 seed = await session.get(TrainingSampleRow, job.source_sample_id)
                 chunk = await session.get(ChunkRow, seed.chunk_id) if seed else None
                 await session.commit()
+            logger.info(
+                "开始处理蒸馏样本：运行编号 %s，任务编号 %s，原样本编号 %s",
+                run_id,
+                job.id,
+                job.source_sample_id,
+            )
             if seed is None or chunk is None:
                 await self._finish_job(run_id, job.id, None, "原样本或来源内容块不存在")
                 continue
             try:
-                response = await self.client.generate(
-                    self._messages(seed, chunk, run.configuration["prompt_text"]),
-                    DistillationResponse,
+                candidate = await self._candidate(
+                    seed,
+                    chunk,
+                    run.configuration["prompt_text"],
+                    run_id,
+                    job.id,
                 )
-                candidate = self._candidate(seed, response, run_id, job.id)
-                await self._finish_job(run_id, job.id, candidate, None)
             except Exception as exc:
-                await self._finish_job(run_id, job.id, None, f"{type(exc).__name__}: {exc}"[:500])
+                error = f"ModelError: {type(exc).__name__}: {exc}"[:500]
+                await self._finish_job(run_id, job.id, None, error)
                 if isinstance(exc, QuotaExceededError):
                     break
-        await self._complete(run_id)
+                continue
+            try:
+                await self._finish_job(run_id, job.id, candidate, None)
+            except Exception as exc:
+                logger.exception("保存教师蒸馏候选失败：运行编号 %s，任务编号 %s", run_id, job.id)
+                error = f"PersistenceError: {type(exc).__name__}: {exc}"[:500]
+                await self._finish_job(run_id, job.id, None, error)
+        completed, failed = await self._complete(run_id)
+        logger.info(
+            "教师蒸馏任务结束：运行编号 %s，生成候选 %d 条，失败或过滤 %d 条，耗时 %.2f 秒",
+            run_id,
+            completed,
+            failed,
+            perf_counter() - started_at,
+        )
 
     async def retry(self, run_id: UUID) -> None:
         async with self.sessions() as session:
@@ -139,12 +187,21 @@ class DistillationService:
             if run is None or run.configuration.get("run_type") != "distillation":
                 raise LookupError("蒸馏任务不存在")
             jobs = (await session.scalars(select(DistillationJobRow).where(
-                DistillationJobRow.run_id == run_id, DistillationJobRow.status == "failed"
+                DistillationJobRow.run_id == run_id
             ))).all()
             for job in jobs:
-                job.status, job.error_message, job.finished_at = "pending", None, None
+                if job.status == "failed":
+                    job.status, job.error_message, job.finished_at = "pending", None, None
+            run.completed_items = sum(job.status == "completed" for job in jobs)
+            run.failed_items = sum(job.status == "filtered" for job in jobs)
             run.status, run.error_message, run.finished_at = PipelineStatus.CREATED, None, None
             await session.commit()
+        logger.info(
+            "开始重试教师蒸馏任务：运行编号 %s，待重试 %d 条，保留规则过滤 %d 条",
+            run_id,
+            sum(job.status == "pending" for job in jobs),
+            run.failed_items,
+        )
         await self.execute(run_id)
 
     async def _set_running(self, run_id: UUID) -> None:
@@ -154,6 +211,12 @@ class DistillationService:
                 raise LookupError("蒸馏任务不存在")
             run.status = run.current_stage = PipelineStatus.DISTILLING
             await session.commit()
+            logger.info(
+                "教师蒸馏任务开始：运行编号 %s，原样本总数 %d，预计模型请求 %s 次",
+                run_id,
+                run.total_items,
+                run.configuration.get("estimated_requests", "未知"),
+            )
 
     async def _finish_job(
         self,
@@ -170,6 +233,13 @@ class DistillationService:
                 job.status, job.error_message, job.finished_at = "failed", error, utc_now()
                 run.failed_items += 1
                 await session.commit()
+                logger.warning(
+                    "教师蒸馏处理失败：运行编号 %s，任务编号 %s，原样本编号 %s，原因 %s",
+                    run_id,
+                    job_id,
+                    job.source_sample_id,
+                    error,
+                )
                 return
             hashes = set((await session.scalars(select(TrainingSampleRow.content_hash).where(
                 TrainingSampleRow.project_id == run.project_id,
@@ -181,14 +251,22 @@ class DistillationService:
             sample = (cleaned.accepted or cleaned.rejected)[0]
             issues = [*cleaned.issues, *self.validator.validate(sample)]
             if issues:
+                issue_summary = "; ".join(issue.rule for issue in issues)[:500]
                 job.status, job.error_message, job.finished_at = (
                     "filtered",
-                    "; ".join(issue.rule for issue in issues)[:500],
+                    issue_summary,
                     utc_now(),
                 )
                 run.failed_items += 1
+                logger.warning(
+                    "教师蒸馏候选被过滤：运行编号 %s，任务编号 %s，原样本编号 %s，规则 %s",
+                    run_id,
+                    job_id,
+                    job.source_sample_id,
+                    issue_summary,
+                )
             else:
-                session.add(TrainingSampleRow(
+                candidate_row = TrainingSampleRow(
                     id=sample.id,
                     project_id=sample.project_id,
                     document_id=sample.document_id,
@@ -199,18 +277,42 @@ class DistillationService:
                     review_status="pending",
                     validation_status="passed",
                     is_deleted=False,
-                ))
+                )
+                await self._attach_candidate(session, job, candidate_row)
                 job.candidate_sample_id, job.status, job.finished_at = sample.id, "completed", utc_now()
                 run.completed_items += 1
+                logger.info(
+                    "教师蒸馏候选已生成：运行编号 %s，任务编号 %s，原样本编号 %s，候选编号 %s，进度 %d/%d",
+                    run_id,
+                    job_id,
+                    job.source_sample_id,
+                    sample.id,
+                    run.completed_items + run.failed_items,
+                    run.total_items,
+                )
             await session.commit()
 
-    async def _complete(self, run_id: UUID) -> None:
+    @staticmethod
+    async def _attach_candidate(
+        session: AsyncSession,
+        job: DistillationJobRow,
+        candidate: TrainingSampleRow,
+    ) -> None:
+        session.add(candidate)
+        # candidate_sample_id has a real foreign key but no ORM relationship. Flush the
+        # candidate first so SQLite and PostgreSQL never observe the reference before its row.
+        await session.flush([candidate])
+        job.candidate_sample_id = candidate.id
+
+    async def _complete(self, run_id: UUID) -> tuple[int, int]:
         async with self.sessions() as session:
             run = await session.get(PipelineRunRow, run_id)
             if run is not None:
                 run.status = run.current_stage = PipelineStatus.READY_FOR_REVIEW
                 run.finished_at = utc_now()
                 await session.commit()
+                return run.completed_items, run.failed_items
+        return 0, 0
 
     async def _seeds(self, project_id: UUID, options: DistillationOptions) -> list[TrainingSampleRow]:
         async with self.sessions() as session:
@@ -228,45 +330,61 @@ class DistillationService:
                 TrainingSampleRow.created_at, TrainingSampleRow.id
             ))).all()
 
-    @staticmethod
-    def _candidate(
+    async def _candidate(
+        self,
         seed: TrainingSampleRow,
-        response: DistillationResponse,
+        chunk: ChunkRow,
+        prompt: str,
         run_id: UUID,
         job_id: UUID,
     ) -> TrainingSample:
-        assistant_count = sum(message["role"] == "assistant" for message in seed.messages)
-        if len(response.assistant_messages) != assistant_count:
-            raise ValueError("教师回复数量必须与原样本 assistant 消息数量一致")
-        replies = iter(response.assistant_messages)
-        messages = [
-            Message(
-                role=item["role"],
-                content=next(replies) if item["role"] == "assistant" else item["content"],
+        messages: list[Message] = []
+        assistant_turn = 0
+        for item in seed.messages:
+            if item["role"] != MessageRole.ASSISTANT:
+                messages.append(Message.model_validate(item))
+                continue
+            if not messages or messages[-1].role != MessageRole.USER:
+                raise ValueError("原样本消息顺序无效，无法独立生成教师回答")
+            assistant_turn += 1
+            logger.info(
+                "请求教师回答：运行编号 %s，任务编号 %s，原样本编号 %s，第 %d 轮",
+                run_id,
+                job_id,
+                seed.id,
+                assistant_turn,
             )
-            for item in seed.messages
-        ]
+            response = await self.client.generate(
+                self._messages(messages, chunk, prompt),
+                DistillationResponse,
+            )
+            messages.append(Message(role=MessageRole.ASSISTANT, content=response.answer))
         return TrainingSample(
             project_id=seed.project_id, document_id=seed.document_id, chunk_id=seed.chunk_id, messages=messages,
             metadata={**seed.metadata_, "generator": "distillation", "distillation_source_id": str(seed.id),
-                      "distillation_run_id": str(run_id), "distillation_job_id": str(job_id)},
+                      "distillation_run_id": str(run_id), "distillation_job_id": str(job_id),
+                      "distillation_method": "independent_answer"},
         )
 
     @staticmethod
-    def _messages(seed: TrainingSampleRow, chunk: ChunkRow, prompt: str) -> list[Message]:
+    def _messages(history: list[Message], chunk: ChunkRow, prompt: str) -> list[Message]:
+        instruction = prompt.split("\n只返回一个 json 对象", 1)[0].strip()
+        effective_prompt = f"{instruction}\n{DISTILLATION_FORMAT}"
+        original_system = "\n".join(
+            message.content for message in history if message.role == MessageRole.SYSTEM
+        )
+        conversation = [message for message in history if message.role != MessageRole.SYSTEM]
         return [
             Message(
                 role=MessageRole.SYSTEM,
-                content="你是训练数据教师。只升级 assistant 回复，严格依据来源内容，不得改变 system/user 消息。\n"
-                + prompt,
-            ),
-            Message(
-                role=MessageRole.USER,
                 content=(
-                    f"来源内容：\n{chunk.content}\n\n原始训练样本：\n"
-                    f"{json.dumps(seed.messages, ensure_ascii=False)}"
+                    "你是训练数据教师。请严格依据来源内容，独立回答对话中最后一条 user 消息。"
+                    "你看不到也不得猜测原样本的旧回答。不要改写问题，不要添加来源无法支持的事实。\n"
+                    f"{effective_prompt}\n\n来源内容：\n{chunk.content}"
+                    + (f"\n\n原始 system 约束：\n{original_system}" if original_system else "")
                 ),
             ),
+            *conversation,
         ]
 
     @staticmethod

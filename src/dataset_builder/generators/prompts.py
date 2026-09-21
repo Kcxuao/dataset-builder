@@ -20,8 +20,7 @@ MULTI_TURN_FORMAT = (
 )
 DISTILLATION_FORMAT = (
     '只返回一个 json 对象，不要解释或代码块，格式为 '
-    '{"assistant_messages": ["升级后的第一条回复", "升级后的第二条回复"]}。'
-    '数组数量必须与原对话中的 assistant 消息数量完全一致；只升级 assistant 回复，不要输出或改写 system/user 消息。'
+    '{"answer": "教师独立生成的回复"}。只回答当前最后一条 user 消息。'
 )
 
 PROMPT_PRESETS = {
@@ -51,12 +50,12 @@ PROMPT_PRESETS = {
         {
             "id": "faithful",
             "name": "事实保真",
-            "instruction": "严格依据来源内容，纠正不准确表述并补足必要依据，不添加未经来源支持的事实。",
+            "instruction": "严格依据来源内容独立作答，覆盖回答问题所需的关键事实，不添加未经来源支持的信息。",
         },
         {
             "id": "clear",
             "name": "表达优化",
-            "instruction": "保持原意与事实，提升回答的清晰度、结构和可读性。",
+            "instruction": "独立生成结构清晰、表达准确且易读的回答。",
         },
         {
             "id": "reasoned",

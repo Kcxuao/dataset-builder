@@ -17,7 +17,7 @@ def test_prompt_presets_and_custom_prompt() -> None:
     multi_turn = resolve_prompt("qa", "default", multi_turn=True)
     assert "messages" in multi_turn
     assert "至少包含两轮" in multi_turn
-    assert "assistant_messages" in resolve_prompt("distillation", "faithful")
+    assert '"answer"' in resolve_prompt("distillation", "faithful")
     assert all(item["multi_turn"] is False for items in presets.values() for item in items)
 
 

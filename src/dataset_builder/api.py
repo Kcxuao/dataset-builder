@@ -618,7 +618,7 @@ def create_app(
                 return {
                     "eligible_count": preview.eligible_count,
                     "target_count": preview.target_count,
-                    "estimated_requests": preview.target_count,
+                    "estimated_requests": preview.estimated_requests,
                     "fingerprint": preview.fingerprint,
                 }
             except (ValueError, LookupError) as exc:
@@ -1058,10 +1058,23 @@ def create_app(
                     .where(DistillationJobRow.run_id == run.id)
                     .group_by(DistillationJobRow.status)
                 )).all()
+                error_rows = (await session.execute(
+                    select(DistillationJobRow.status, DistillationJobRow.error_message)
+                    .where(
+                        DistillationJobRow.run_id == run.id,
+                        DistillationJobRow.status.in_(("failed", "filtered")),
+                    )
+                    .order_by(DistillationJobRow.created_at, DistillationJobRow.id)
+                    .limit(20)
+                )).all()
                 failed = []
                 distillation = {
                     "attempted": sum(count for status, count in job_rows if status != "pending"),
                     "jobs": [{"status": status, "count": count} for status, count in job_rows],
+                    "errors": [
+                        {"status": status, "message": message or "未记录失败原因"}
+                        for status, message in error_rows
+                    ],
                 }
             return {
                 "id": str(run.id),
