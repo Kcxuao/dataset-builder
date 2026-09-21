@@ -57,38 +57,83 @@ class BuildService:
         self.validator = SampleValidator()
 
     async def preview(
-        self, path: Path, generator_mode: str = "qa", splitter_mode: str = "auto",
-        max_chunk_length: int = 1000, overlap: int = 0, content_field: str | None = None,
-        content_columns: tuple[str, ...] = (), parser_workers: int = 1,
-        prompt_text: str | None = None, model_id: UUID | None = None,
+        self,
+        path: Path,
+        generator_mode: str = "qa",
+        splitter_mode: str = "auto",
+        max_chunk_length: int = 1000,
+        overlap: int = 0,
+        content_field: str | None = None,
+        content_columns: tuple[str, ...] = (),
+        parser_workers: int = 1,
+        prompt_text: str | None = None,
+        model_id: UUID | None = None,
     ) -> PreviewResult:
         self._validate_options(
-            path, generator_mode, splitter_mode, max_chunk_length, overlap,
-            content_field, content_columns, parser_workers,
+            path,
+            generator_mode,
+            splitter_mode,
+            max_chunk_length,
+            overlap,
+            content_field,
+            content_columns,
+            parser_workers,
         )
         documents, chunks = await self._parse_and_split(
-            path, uuid4(), splitter_mode, max_chunk_length, overlap,
-            content_field, content_columns, parser_workers,
+            path,
+            uuid4(),
+            splitter_mode,
+            max_chunk_length,
+            overlap,
+            content_field,
+            content_columns,
+            parser_workers,
         )
         return PreviewResult(
-            documents=documents, chunks=chunks,
+            documents=documents,
+            chunks=chunks,
             fingerprint=self.preview_fingerprint(
-                path, generator_mode, splitter_mode, max_chunk_length, overlap, content_field,
-                content_columns, parser_workers, prompt_text, model_id,
+                path,
+                generator_mode,
+                splitter_mode,
+                max_chunk_length,
+                overlap,
+                content_field,
+                content_columns,
+                parser_workers,
+                prompt_text,
+                model_id,
             ),
         )
 
     async def generate_preview(
-        self, path: Path, chunk_indices: list[int], fingerprint: str,
-        generator_mode: str = "qa", splitter_mode: str = "auto", max_chunk_length: int = 1000,
-        overlap: int = 0, content_field: str | None = None, content_columns: tuple[str, ...] = (),
-        parser_workers: int = 1, prompt_text: str | None = None, model_id: UUID | None = None,
+        self,
+        path: Path,
+        chunk_indices: list[int],
+        fingerprint: str,
+        generator_mode: str = "qa",
+        splitter_mode: str = "auto",
+        max_chunk_length: int = 1000,
+        overlap: int = 0,
+        content_field: str | None = None,
+        content_columns: tuple[str, ...] = (),
+        parser_workers: int = 1,
+        prompt_text: str | None = None,
+        model_id: UUID | None = None,
     ) -> tuple[list[TrainingSample], list[ValidationIssue]]:
         if not chunk_indices or len(chunk_indices) > 3 or len(set(chunk_indices)) != len(chunk_indices):
             raise ValueError("试生成必须选择 1 到 3 个不重复的内容块")
         preview = await self.preview(
-            path, generator_mode, splitter_mode, max_chunk_length, overlap, content_field,
-            content_columns, parser_workers, prompt_text, model_id,
+            path,
+            generator_mode,
+            splitter_mode,
+            max_chunk_length,
+            overlap,
+            content_field,
+            content_columns,
+            parser_workers,
+            prompt_text,
+            model_id,
         )
         if fingerprint != preview.fingerprint:
             raise ValueError("预览已失效：文件或配置已变化，请重新预览")
@@ -106,10 +151,14 @@ class BuildService:
             try:
                 generated = await generator.generate(chunk)
             except Exception as exc:
-                issues.append(ValidationIssue(
-                    sample_id=uuid4(), rule="generation_failed", severity="error",
-                    message=f"内容块 {index + 1} 试生成失败：{type(exc).__name__}: {exc}",
-                ))
+                issues.append(
+                    ValidationIssue(
+                        sample_id=uuid4(),
+                        rule="generation_failed",
+                        severity="error",
+                        message=f"内容块 {index + 1} 试生成失败：{type(exc).__name__}: {exc}",
+                    )
+                )
                 if isinstance(exc, QuotaExceededError):
                     break
                 continue
@@ -127,15 +176,28 @@ class BuildService:
 
     @staticmethod
     def preview_fingerprint(
-        path: Path, generator_mode: str, splitter_mode: str, max_chunk_length: int, overlap: int,
-        content_field: str | None, content_columns: tuple[str, ...], parser_workers: int,
-        prompt_text: str | None, model_id: UUID | None,
+        path: Path,
+        generator_mode: str,
+        splitter_mode: str,
+        max_chunk_length: int,
+        overlap: int,
+        content_field: str | None,
+        content_columns: tuple[str, ...],
+        parser_workers: int,
+        prompt_text: str | None,
+        model_id: UUID | None,
     ) -> str:
         payload = {
-            "file_sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "filename": path.name,
-            "generator": generator_mode, "splitter": splitter_mode, "max_chunk_length": max_chunk_length,
-            "overlap": overlap, "content_field": content_field, "content_columns": content_columns,
-            "parser_workers": parser_workers, "prompt_text": prompt_text,
+            "file_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "filename": path.name,
+            "generator": generator_mode,
+            "splitter": splitter_mode,
+            "max_chunk_length": max_chunk_length,
+            "overlap": overlap,
+            "content_field": content_field,
+            "content_columns": content_columns,
+            "parser_workers": parser_workers,
+            "prompt_text": prompt_text,
             "model_id": str(model_id) if model_id else None,
         }
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=list).encode()
@@ -143,8 +205,14 @@ class BuildService:
 
     @staticmethod
     def _validate_options(
-        path: Path, generator_mode: str, splitter_mode: str, max_chunk_length: int, overlap: int,
-        content_field: str | None, content_columns: tuple[str, ...], parser_workers: int,
+        path: Path,
+        generator_mode: str,
+        splitter_mode: str,
+        max_chunk_length: int,
+        overlap: int,
+        content_field: str | None,
+        content_columns: tuple[str, ...],
+        parser_workers: int,
     ) -> None:
         if generator_mode not in {"qa", "instruction"}:
             raise ValueError("generator_mode must be qa or instruction")
@@ -167,25 +235,44 @@ class BuildService:
             raise ValueError("解析工作线程数必须在 1 到 16 之间")
 
     async def _parse_and_split(
-        self, path: Path, project_id: UUID, splitter_mode: str, max_chunk_length: int, overlap: int,
-        content_field: str | None, content_columns: tuple[str, ...], parser_workers: int,
+        self,
+        path: Path,
+        project_id: UUID,
+        splitter_mode: str,
+        max_chunk_length: int,
+        overlap: int,
+        content_field: str | None,
+        content_columns: tuple[str, ...],
+        parser_workers: int,
     ) -> tuple[list[object], list[Chunk]]:
         parser = {
-            ".txt": TextParser, ".md": MarkdownParser, ".markdown": MarkdownParser,
-            ".json": JSONParser, ".jsonl": JSONLParser, ".csv": CSVParser,
+            ".txt": TextParser,
+            ".md": MarkdownParser,
+            ".markdown": MarkdownParser,
+            ".json": JSONParser,
+            ".jsonl": JSONLParser,
+            ".csv": CSVParser,
         }[path.suffix.lower()]()
-        documents = await asyncio.to_thread(parser.parse, ImportSource(
-            path=path, project_id=project_id, content_field=content_field,
-            content_columns=content_columns, workers=parser_workers,
-        ))
+        documents = await asyncio.to_thread(
+            parser.parse,
+            ImportSource(
+                path=path,
+                project_id=project_id,
+                content_field=content_field,
+                content_columns=content_columns,
+                workers=parser_workers,
+            ),
+        )
         mode = "markdown" if splitter_mode == "auto" and path.suffix.lower() in {".md", ".markdown"} else splitter_mode
         splitter_class = {
-            "fixed": FixedLengthSplitter, "paragraph": ParagraphSplitter, "markdown": MarkdownHeadingSplitter,
+            "fixed": FixedLengthSplitter,
+            "paragraph": ParagraphSplitter,
+            "markdown": MarkdownHeadingSplitter,
         }["paragraph" if mode == "auto" else mode]
         splitter = splitter_class(max_length=max_chunk_length, overlap=overlap)
         chunks: list[Chunk] = []
         for start in range(0, len(documents), parser_workers):
-            group = documents[start:start + parser_workers]
+            group = documents[start : start + parser_workers]
             for result in await asyncio.gather(*(asyncio.to_thread(splitter.split, document) for document in group)):
                 chunks.extend(result)
         return documents, chunks
@@ -207,8 +294,19 @@ class BuildService:
         model_id: UUID | None = None,
     ) -> BuildSummary:
         prepared = await self.prepare_build(
-            path, project_name, generator_mode, splitter_mode, max_chunk_length, overlap,
-            content_field, content_columns, entrypoint, parser_workers, prompt_preset, custom_prompt, model_id,
+            path,
+            project_name,
+            generator_mode,
+            splitter_mode,
+            max_chunk_length,
+            overlap,
+            content_field,
+            content_columns,
+            entrypoint,
+            parser_workers,
+            prompt_preset,
+            custom_prompt,
+            model_id,
         )
         return await self.execute_build(prepared.run_id, path)
 
@@ -231,8 +329,14 @@ class BuildService:
         if not project_name.strip():
             raise ValueError("project_name must not be blank")
         self._validate_options(
-            path, generator_mode, splitter_mode, max_chunk_length, overlap,
-            content_field, content_columns, parser_workers,
+            path,
+            generator_mode,
+            splitter_mode,
+            max_chunk_length,
+            overlap,
+            content_field,
+            content_columns,
+            parser_workers,
         )
         prompt_text = resolve_prompt(generator_mode, prompt_preset, custom_prompt)
 
@@ -240,20 +344,28 @@ class BuildService:
         async with self.sessions() as session:
             session.add(ProjectRow(id=project_id, name=project_name.strip()))
             await session.flush()
-            session.add(PipelineRunRow(
-                id=run_id, project_id=project_id, status=PipelineStatus.CREATED,
-                configuration={
-                    "generator": generator_mode, "splitter": splitter_mode,
-                    "max_chunk_length": max_chunk_length, "overlap": overlap,
-                    "content_field": content_field, "content_columns": list(content_columns),
-                    "entrypoint": entrypoint,
-                    "parser_workers": parser_workers,
-                    "prompt_preset": prompt_preset, "prompt_text": prompt_text,
-                    "model_id": str(model_id) if model_id else None,
-                    "llm": self._llm_signature(),
-                },
-                started_at=utc_now(),
-            ))
+            session.add(
+                PipelineRunRow(
+                    id=run_id,
+                    project_id=project_id,
+                    status=PipelineStatus.CREATED,
+                    configuration={
+                        "generator": generator_mode,
+                        "splitter": splitter_mode,
+                        "max_chunk_length": max_chunk_length,
+                        "overlap": overlap,
+                        "content_field": content_field,
+                        "content_columns": list(content_columns),
+                        "entrypoint": entrypoint,
+                        "parser_workers": parser_workers,
+                        "prompt_preset": prompt_preset,
+                        "prompt_text": prompt_text,
+                        "model_id": str(model_id) if model_id else None,
+                        "llm": self._llm_signature(),
+                    },
+                    started_at=utc_now(),
+                )
+            )
             await session.commit()
         logger.info("已创建构建任务：运行编号 %s，项目编号 %s，文件 %s", run_id, project_id, path.name)
         return BuildSummary(project_id, run_id, 0, 0, 0, 0)
@@ -267,9 +379,15 @@ class BuildService:
             configuration = run.configuration
         try:
             return await self._process(
-                project_id, run_id, path, configuration["generator"], configuration["splitter"],
-                configuration["max_chunk_length"], configuration["overlap"],
-                configuration["content_field"], tuple(configuration["content_columns"]),
+                project_id,
+                run_id,
+                path,
+                configuration["generator"],
+                configuration["splitter"],
+                configuration["max_chunk_length"],
+                configuration["overlap"],
+                configuration["content_field"],
+                tuple(configuration["content_columns"]),
                 configuration.get("parser_workers", 1),
                 configuration.get("prompt_text"),
             )
@@ -305,12 +423,20 @@ class BuildService:
         logger.info("开始解析文件：运行编号 %s，文件 %s", run_id, path.name)
         parse_started = perf_counter()
         documents, chunks = await self._parse_and_split(
-            path, project_id, splitter_mode, max_chunk_length, overlap,
-            content_field, content_columns, parser_workers,
+            path,
+            project_id,
+            splitter_mode,
+            max_chunk_length,
+            overlap,
+            content_field,
+            content_columns,
+            parser_workers,
         )
         logger.info(
             "文件解析完成：运行编号 %s，文档 %d 个，耗时 %.2f 秒",
-            run_id, len(documents), perf_counter() - parse_started,
+            run_id,
+            len(documents),
+            perf_counter() - parse_started,
         )
 
         async with self.sessions() as session:
@@ -322,7 +448,9 @@ class BuildService:
         split_started = perf_counter()
         logger.info(
             "内容切分完成：运行编号 %s，内容块 %d 个，耗时 %.2f 秒",
-            run_id, len(chunks), perf_counter() - split_started,
+            run_id,
+            len(chunks),
+            perf_counter() - split_started,
         )
         async with self.sessions() as session:
             run = await session.get(PipelineRunRow, run_id)
@@ -330,18 +458,30 @@ class BuildService:
             run.current_stage = PipelineStatus.SPLITTING
             run.total_items = len(chunks)
             for document in documents:
-                session.add(SourceDocumentRow(
-                    id=document.id, project_id=project_id, source_name=document.source_name,
-                    source_type=document.source_type, content=document.content,
-                    metadata_=document.metadata, parse_status=document.parse_status,
-                ))
+                session.add(
+                    SourceDocumentRow(
+                        id=document.id,
+                        project_id=project_id,
+                        source_name=document.source_name,
+                        source_type=document.source_type,
+                        content=document.content,
+                        metadata_=document.metadata,
+                        parse_status=document.parse_status,
+                    )
+                )
             await session.flush()
             for chunk in chunks:
-                session.add(ChunkRow(
-                    id=chunk.id, document_id=chunk.document_id, index=chunk.index,
-                    content=chunk.content, content_hash=chunk.content_hash,
-                    metadata_=chunk.metadata, generation_status="pending",
-                ))
+                session.add(
+                    ChunkRow(
+                        id=chunk.id,
+                        document_id=chunk.document_id,
+                        index=chunk.index,
+                        content=chunk.content,
+                        content_hash=chunk.content_hash,
+                        metadata_=chunk.metadata,
+                        generation_status="pending",
+                    )
+                )
             run.status = PipelineStatus.GENERATING
             run.current_stage = PipelineStatus.GENERATING
             await session.commit()
@@ -358,8 +498,10 @@ class BuildService:
             if project is None or project.deleted_at is not None:
                 raise LookupError("数据集不存在")
             run = await session.scalar(
-                select(PipelineRunRow).where(PipelineRunRow.project_id == project_id)
-                .order_by(PipelineRunRow.started_at.desc()).limit(1)
+                select(PipelineRunRow)
+                .where(PipelineRunRow.project_id == project_id)
+                .order_by(PipelineRunRow.started_at.desc())
+                .limit(1)
             )
             if run is None:
                 raise LookupError(f"Project {project_id} has no pipeline run")
@@ -367,25 +509,36 @@ class BuildService:
                 raise ValueError("LLM configuration differs from the original run")
             mode = run.configuration["generator"]
             prompt_text = run.configuration.get("prompt_text")
-            rows = (await session.scalars(
-                select(ChunkRow).join(SourceDocumentRow)
-                .where(
-                    SourceDocumentRow.project_id == project_id,
-                    ChunkRow.generation_status.in_(["failed", "pending"]),
+            rows = (
+                await session.scalars(
+                    select(ChunkRow)
+                    .join(SourceDocumentRow)
+                    .where(
+                        SourceDocumentRow.project_id == project_id,
+                        ChunkRow.generation_status.in_(["failed", "pending"]),
+                    )
+                    .order_by(SourceDocumentRow.created_at, ChunkRow.index)
                 )
-                .order_by(SourceDocumentRow.created_at, ChunkRow.index)
-            )).all()
-            chunks = [Chunk(
-                id=row.id, document_id=row.document_id, index=row.index,
-                content=row.content, metadata=row.metadata_,
-            ) for row in rows]
-            hashes = (await session.scalars(
-                select(TrainingSampleRow.content_hash).where(
-                    TrainingSampleRow.project_id == project_id,
-                    TrainingSampleRow.validation_status == "passed",
-                    TrainingSampleRow.content_hash.is_not(None),
+            ).all()
+            chunks = [
+                Chunk(
+                    id=row.id,
+                    document_id=row.document_id,
+                    index=row.index,
+                    content=row.content,
+                    metadata=row.metadata_,
                 )
-            )).all()
+                for row in rows
+            ]
+            hashes = (
+                await session.scalars(
+                    select(TrainingSampleRow.content_hash).where(
+                        TrainingSampleRow.project_id == project_id,
+                        TrainingSampleRow.validation_status == "passed",
+                        TrainingSampleRow.content_hash.is_not(None),
+                    )
+                )
+            ).all()
             document_count = await session.scalar(
                 select(func.count(SourceDocumentRow.id)).where(SourceDocumentRow.project_id == project_id)
             )
@@ -400,6 +553,70 @@ class BuildService:
             project_id, run_id, chunks, mode, {(project_id, value) for value in hashes}, prompt_text
         )
         return BuildSummary(project_id, run_id, document_count, len(chunks), sample_count, failed_count)
+
+    async def regenerate_chunk(self, project_id: UUID, chunk_id: UUID) -> BuildSummary:
+        async with self.sessions() as session:
+            chunk = await session.get(ChunkRow, chunk_id)
+            if chunk is None:
+                raise LookupError("内容块不存在")
+            document = await session.get(SourceDocumentRow, chunk.document_id)
+            if document is None or document.project_id != project_id:
+                raise LookupError("内容块不属于当前数据集")
+            runs = (await session.scalars(select(PipelineRunRow).where(PipelineRunRow.project_id == project_id))).all()
+            if any(
+                run.configuration.get("regenerate_chunk_id") == str(chunk_id)
+                and run.status in {PipelineStatus.CREATED, PipelineStatus.GENERATING}
+                for run in runs
+            ):
+                raise ValueError("该内容块正在重新生成")
+            original = next((run for run in reversed(runs) if not run.configuration.get("regenerate_chunk_id")), None)
+            if original is None:
+                raise LookupError("项目没有原始构建记录")
+            if original.configuration.get("llm") != self._llm_signature():
+                raise ValueError("当前模型配置与原构建任务不一致")
+            old_ids = list(
+                await session.scalars(
+                    select(TrainingSampleRow.id).where(
+                        TrainingSampleRow.chunk_id == chunk_id, TrainingSampleRow.superseded_at.is_(None)
+                    )
+                )
+            )
+            run_id = uuid4()
+            session.add(
+                PipelineRunRow(
+                    id=run_id,
+                    project_id=project_id,
+                    status=PipelineStatus.GENERATING,
+                    current_stage=PipelineStatus.GENERATING,
+                    total_items=1,
+                    started_at=utc_now(),
+                    configuration={**original.configuration, "regenerate_chunk_id": str(chunk_id)},
+                )
+            )
+            await session.commit()
+            mode, prompt = original.configuration["generator"], original.configuration.get("prompt_text")
+            item = Chunk(
+                id=chunk.id,
+                document_id=chunk.document_id,
+                index=chunk.index,
+                content=chunk.content,
+                metadata=chunk.metadata_,
+            )
+        sample_count, failed_count = await self._generate_chunks(project_id, run_id, [item], mode, set(), prompt)
+        async with self.sessions() as session:
+            passed = await session.scalar(
+                select(func.count(TrainingSampleRow.id)).where(
+                    TrainingSampleRow.chunk_id == chunk_id,
+                    TrainingSampleRow.id.not_in(old_ids),
+                    TrainingSampleRow.validation_status == "passed",
+                )
+            )
+            if passed:
+                rows = (await session.scalars(select(TrainingSampleRow).where(TrainingSampleRow.id.in_(old_ids)))).all()
+                for row in rows:
+                    row.superseded_at = utc_now()
+                await session.commit()
+        return BuildSummary(project_id, run_id, 1, 1, sample_count, failed_count)
 
     async def _generate_chunks(
         self,
@@ -419,7 +636,7 @@ class BuildService:
         sample_count = 0
         failed_count = 0
         for start in range(0, len(chunks), concurrency):
-            group = chunks[start:start + concurrency]
+            group = chunks[start : start + concurrency]
             results = await asyncio.gather(*(generator.generate(chunk) for chunk in group), return_exceptions=True)
             for chunk, result in zip(group, results, strict=True):
                 sample_count, failed_count = await self._save_generation_result(
@@ -437,14 +654,22 @@ class BuildService:
             await session.commit()
         logger.info(
             "构建任务结束：运行编号 %s，成功内容块 %d 个，失败内容块 %d 个，生成耗时 %.2f 秒，等待人工审核",
-            run_id, run.completed_items, failed_count, perf_counter() - generation_started,
+            run_id,
+            run.completed_items,
+            failed_count,
+            perf_counter() - generation_started,
         )
         return sample_count, failed_count
 
     async def _save_generation_result(
-        self, project_id: UUID, run_id: UUID, chunk: Chunk,
-        result: list[TrainingSample] | BaseException, seen: set[tuple[UUID, str]],
-        sample_count: int, failed_count: int,
+        self,
+        project_id: UUID,
+        run_id: UUID,
+        chunk: Chunk,
+        result: list[TrainingSample] | BaseException,
+        seen: set[tuple[UUID, str]],
+        sample_count: int,
+        failed_count: int,
     ) -> tuple[int, int]:
         if isinstance(result, BaseException) and not isinstance(result, Exception):
             raise result
@@ -461,9 +686,7 @@ class BuildService:
                 row.metadata_ = {**row.metadata_, "generation_error": f"{type(exc).__name__}: {exc}"[:500]}
                 run.failed_items += 1
                 await session.commit()
-            logger.warning(
-                "内容块生成失败：运行编号 %s，内容块编号 %s，累计失败 %d 个", run_id, chunk.id, failed_count
-            )
+            logger.warning("内容块生成失败：运行编号 %s，内容块编号 %s，累计失败 %d 个", run_id, chunk.id, failed_count)
             return sample_count, failed_count
 
         cleaned = self.cleaner.clean(generated, seen)
@@ -487,7 +710,10 @@ class BuildService:
             await session.commit()
         logger.info(
             "内容块处理完成：运行编号 %s，内容块编号 %s，进度 %d/%d，本块样本 %d 条",
-            run_id, chunk.id, run.completed_items + run.failed_items, run.total_items,
+            run_id,
+            chunk.id,
+            run.completed_items + run.failed_items,
+            run.total_items,
             len(cleaned.accepted) + len(cleaned.rejected),
         )
         seen.update(new_hashes)
@@ -507,15 +733,28 @@ class BuildService:
 
     @staticmethod
     async def _add_sample(session: AsyncSession, sample: TrainingSample, issues: list[ValidationIssue]) -> None:
-        session.add(TrainingSampleRow(
-            id=sample.id, project_id=sample.project_id, document_id=sample.document_id,
-            chunk_id=sample.chunk_id, messages=[message.model_dump(mode="json") for message in sample.messages],
-            metadata_=sample.metadata, content_hash=sample.content_hash,
-            review_status="pending", validation_status="failed" if issues else "passed", is_deleted=False,
-        ))
+        session.add(
+            TrainingSampleRow(
+                id=sample.id,
+                project_id=sample.project_id,
+                document_id=sample.document_id,
+                chunk_id=sample.chunk_id,
+                messages=[message.model_dump(mode="json") for message in sample.messages],
+                metadata_=sample.metadata,
+                content_hash=sample.content_hash,
+                review_status="pending",
+                validation_status="failed" if issues else "passed",
+                is_deleted=False,
+            )
+        )
         await session.flush()
         for issue in issues:
-            session.add(ValidationIssueRow(
-                id=issue.id, sample_id=sample.id, rule=issue.rule,
-                severity=issue.severity, message=issue.message,
-            ))
+            session.add(
+                ValidationIssueRow(
+                    id=issue.id,
+                    sample_id=sample.id,
+                    rule=issue.rule,
+                    severity=issue.severity,
+                    message=issue.message,
+                )
+            )

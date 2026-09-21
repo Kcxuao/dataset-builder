@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import Text, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataset_builder.cleaners import BasicCleaner
@@ -23,13 +23,44 @@ class ReviewService:
         project = await self.session.get(ProjectRow, project_id)
         if project is None or project.deleted_at is not None:
             raise LookupError("数据集不存在")
-        rows = (await self.session.scalars(
-            select(TrainingSampleRow)
-            .where(TrainingSampleRow.project_id == project_id)
-            .order_by(TrainingSampleRow.created_at, TrainingSampleRow.id)
-            .limit(limit).offset(offset)
-        )).all()
+        rows = (
+            await self.session.scalars(
+                select(TrainingSampleRow)
+                .where(TrainingSampleRow.project_id == project_id, TrainingSampleRow.superseded_at.is_(None))
+                .order_by(TrainingSampleRow.created_at, TrainingSampleRow.id)
+                .limit(limit)
+                .offset(offset)
+            )
+        ).all()
         return [await self._view(row) for row in rows]
+
+    async def search_samples(self, project_id: UUID, page: int, size: int, **filters: object) -> dict[str, object]:
+        if page < 1 or not 1 <= size <= 200:
+            raise ValueError("page 必须大于零，size 必须在 1 到 200 之间")
+        project = await self.session.get(ProjectRow, project_id)
+        if project is None or project.deleted_at is not None:
+            raise LookupError("数据集不存在")
+        conditions = [TrainingSampleRow.project_id == project_id, TrainingSampleRow.superseded_at.is_(None)]
+        columns = (
+            ("review_status", TrainingSampleRow.review_status),
+            ("validation_status", TrainingSampleRow.validation_status),
+            ("is_deleted", TrainingSampleRow.is_deleted),
+            ("source_document_id", TrainingSampleRow.document_id),
+        )
+        for name, column in columns:
+            if filters.get(name) is not None:
+                conditions.append(column == filters[name])
+        if issue_rule := filters.get("issue_rule"):
+            issue_samples = select(ValidationIssueRow.sample_id).where(ValidationIssueRow.rule == issue_rule)
+            conditions.append(TrainingSampleRow.id.in_(issue_samples))
+        if keyword := filters.get("keyword"):
+            conditions.append(TrainingSampleRow.messages.cast(Text).ilike(f"%{str(keyword).strip()}%"))
+        query = (
+            select(TrainingSampleRow).where(*conditions).order_by(TrainingSampleRow.created_at, TrainingSampleRow.id)
+        )
+        total = await self.session.scalar(select(func.count()).select_from(query.subquery()))
+        rows = (await self.session.scalars(query.limit(size).offset((page - 1) * size))).all()
+        return {"items": [await self._view(row) for row in rows], "total": total or 0, "page": page, "size": size}
 
     async def get_sample(self, sample_id: UUID) -> dict[str, object]:
         row = await self._row(sample_id)
@@ -37,19 +68,29 @@ class ReviewService:
 
     async def edit(self, sample_id: UUID, messages: list[Message]) -> dict[str, object]:
         row = await self._row(sample_id)
-        original = TrainingSample.model_validate({
-            "id": row.id, "project_id": row.project_id, "document_id": row.document_id,
-            "chunk_id": row.chunk_id, "messages": messages, "metadata": row.metadata_,
-        })
-        hashes = set((await self.session.scalars(
-            select(TrainingSampleRow.content_hash).where(
-                TrainingSampleRow.project_id == row.project_id,
-                TrainingSampleRow.id != row.id,
-                TrainingSampleRow.validation_status == "passed",
-                TrainingSampleRow.is_deleted.is_(False),
-                TrainingSampleRow.content_hash.is_not(None),
-            )
-        )).all())
+        original = TrainingSample.model_validate(
+            {
+                "id": row.id,
+                "project_id": row.project_id,
+                "document_id": row.document_id,
+                "chunk_id": row.chunk_id,
+                "messages": messages,
+                "metadata": row.metadata_,
+            }
+        )
+        hashes = set(
+            (
+                await self.session.scalars(
+                    select(TrainingSampleRow.content_hash).where(
+                        TrainingSampleRow.project_id == row.project_id,
+                        TrainingSampleRow.id != row.id,
+                        TrainingSampleRow.validation_status == "passed",
+                        TrainingSampleRow.is_deleted.is_(False),
+                        TrainingSampleRow.content_hash.is_not(None),
+                    )
+                )
+            ).all()
+        )
         cleaned = self.cleaner.clean([original], {(row.project_id, value) for value in hashes})
         sample = (cleaned.accepted or cleaned.rejected)[0]
         issues = [*cleaned.issues, *self.validator.validate(sample)]
@@ -60,10 +101,15 @@ class ReviewService:
         row.updated_at = utc_now()
         await self.session.execute(delete(ValidationIssueRow).where(ValidationIssueRow.sample_id == sample_id))
         for issue in issues:
-            self.session.add(ValidationIssueRow(
-                id=issue.id, sample_id=sample_id, rule=issue.rule,
-                severity=issue.severity, message=issue.message,
-            ))
+            self.session.add(
+                ValidationIssueRow(
+                    id=issue.id,
+                    sample_id=sample_id,
+                    rule=issue.rule,
+                    severity=issue.severity,
+                    message=issue.message,
+                )
+            )
         await self.session.flush()
         return await self._view(row)
 
@@ -81,11 +127,13 @@ class ReviewService:
         if action not in {"approved", "rejected", "pending", "delete", "restore"}:
             raise ValueError("批量操作类型无效")
         ids = list(dict.fromkeys(sample_ids))
-        rows = (await self.session.scalars(
-            select(TrainingSampleRow).where(
-                TrainingSampleRow.project_id == project_id, TrainingSampleRow.id.in_(ids)
+        rows = (
+            await self.session.scalars(
+                select(TrainingSampleRow).where(
+                    TrainingSampleRow.project_id == project_id, TrainingSampleRow.id.in_(ids)
+                )
             )
-        )).all()
+        ).all()
         by_id = {row.id: row for row in rows}
         updated: list[str] = []
         skipped: list[dict[str, str]] = []
@@ -131,15 +179,23 @@ class ReviewService:
 
     async def _view(self, row: TrainingSampleRow) -> dict[str, object]:
         chunk = await self.session.get(ChunkRow, row.chunk_id)
-        issues = (await self.session.scalars(
-            select(ValidationIssueRow)
-            .where(ValidationIssueRow.sample_id == row.id)
-            .order_by(ValidationIssueRow.created_at)
-        )).all()
+        issues = (
+            await self.session.scalars(
+                select(ValidationIssueRow)
+                .where(ValidationIssueRow.sample_id == row.id)
+                .order_by(ValidationIssueRow.created_at)
+            )
+        ).all()
         return {
-            "id": str(row.id), "project_id": str(row.project_id), "chunk_id": str(row.chunk_id),
-            "messages": row.messages, "metadata": row.metadata_, "chunk_content": chunk.content if chunk else None,
-            "review_status": row.review_status, "validation_status": row.validation_status,
+            "id": str(row.id),
+            "project_id": str(row.project_id),
+            "chunk_id": str(row.chunk_id),
+            "messages": row.messages,
+            "metadata": row.metadata_,
+            "chunk_content": chunk.content if chunk else None,
+            "review_status": row.review_status,
+            "validation_status": row.validation_status,
             "is_deleted": row.is_deleted,
+            "superseded_at": row.superseded_at,
             "issues": [{"rule": issue.rule, "severity": issue.severity, "message": issue.message} for issue in issues],
         }

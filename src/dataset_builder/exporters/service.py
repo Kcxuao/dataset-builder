@@ -45,6 +45,7 @@ class SampleExportService:
                     TrainingSampleRow.review_status == "approved",
                     TrainingSampleRow.validation_status == "passed",
                     TrainingSampleRow.is_deleted.is_(False),
+                    TrainingSampleRow.superseded_at.is_(None),
                 )
                 .order_by(TrainingSampleRow.id)
                 .execution_options(yield_per=self.batch_size)
@@ -52,14 +53,16 @@ class SampleExportService:
             rows = await self.session.stream_scalars(query)
             try:
                 async for row in rows:
-                    sample = TrainingSample.model_validate({
-                        "id": row.id,
-                        "project_id": row.project_id,
-                        "document_id": row.document_id,
-                        "chunk_id": row.chunk_id,
-                        "messages": row.messages,
-                        "metadata": row.metadata_,
-                    })
+                    sample = TrainingSample.model_validate(
+                        {
+                            "id": row.id,
+                            "project_id": row.project_id,
+                            "document_id": row.document_id,
+                            "chunk_id": row.chunk_id,
+                            "messages": row.messages,
+                            "metadata": row.metadata_,
+                        }
+                    )
                     yield formatter.format(sample)
             finally:
                 await rows.close()
@@ -75,15 +78,17 @@ class SampleExportService:
         finally:
             record.finished_at = utc_now()
             await self.session.flush()
-        return ExportRecord.model_validate({
-            "id": record.id,
-            "project_id": project_id,
-            "format": format,
-            "file_type": file_type,
-            "status": record.status,
-            "sample_count": record.sample_count,
-            "file_path": record.file_path,
-            "error_message": record.error_message,
-            "created_at": record.created_at,
-            "finished_at": record.finished_at,
-        })
+        return ExportRecord.model_validate(
+            {
+                "id": record.id,
+                "project_id": project_id,
+                "format": format,
+                "file_type": file_type,
+                "status": record.status,
+                "sample_count": record.sample_count,
+                "file_path": record.file_path,
+                "error_message": record.error_message,
+                "created_at": record.created_at,
+                "finished_at": record.finished_at,
+            }
+        )

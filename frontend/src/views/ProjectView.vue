@@ -13,6 +13,8 @@ const project = computed(() => projects.value.find(item => item.id === route.par
 const run = ref(null)
 const samples = ref([])
 const page = ref(1)
+const total = ref(0)
+const filters = reactive({ review_status: '', validation_status: '', keyword: '' })
 const limit = 20
 const loading = ref(false)
 const busy = ref(false)
@@ -33,9 +35,26 @@ function sampleStatus(item) {
 function excerpt(item) { return item.messages.find(message => message.role === 'user')?.content || item.messages[0]?.content || '空消息' }
 async function loadSamples() {
   loading.value = true
-  try { samples.value = await api(`/api/projects/${route.params.id}/samples?limit=${limit}&offset=${(page.value - 1) * limit}`) }
+  try {
+    const query = new URLSearchParams({ page: String(page.value), size: String(limit) })
+    for (const [key, value] of Object.entries(filters)) if (value) query.set(key, value)
+    const result = await api(`/api/projects/${route.params.id}/samples/search?${query}`)
+    samples.value = result.items; total.value = result.total
+  }
   catch (error) { notifyError(error, ElMessage) }
   finally { loading.value = false }
+}
+async function applyFilters() { page.value = 1; await loadSamples() }
+async function clearFilters() {
+  filters.review_status = ''; filters.validation_status = ''; filters.keyword = ''
+  await applyFilters()
+}
+async function regenerate() {
+  if (!detail.value) return
+  busy.value = true
+  try { await api(`/api/projects/${route.params.id}/chunks/${detail.value.chunk_id}/regenerate`, { method: 'POST' }); drawer.value = false; await reload(); ElMessage.success('已完成重新生成；新样本等待审核') }
+  catch (error) { notifyError(error, ElMessage) }
+  finally { busy.value = false }
 }
 async function loadRun() {
   if (!project.value?.run_id) return
@@ -117,7 +136,17 @@ onUnmounted(() => clearTimeout(timer))
     <div v-if="run?.failed_chunks?.length" class="failed-chunks"><p v-for="chunk in run.failed_chunks" :key="chunk.id">内容块 {{ chunk.id.slice(0, 8) }}：{{ chunk.error }}</p></div>
   </section>
   <section class="section-card review-card">
-    <div class="section-heading review-heading"><div><h2>样本审核</h2><span class="section-subtitle">当前页 {{ samples.length }} 条；批量操作仅影响这一页</span></div><div class="bulk-toolbar"><el-button size="small" type="success" plain :disabled="!samples.length" @click="bulk('approved')">本页通过</el-button><el-button size="small" plain :disabled="!samples.length" @click="bulk('rejected')">本页拒绝</el-button><el-button size="small" plain :disabled="!samples.length" @click="bulk('pending')">设为待审核</el-button><el-button size="small" type="danger" plain :disabled="!samples.length" @click="bulk('delete')">删除本页</el-button><el-button size="small" plain :disabled="!samples.length" @click="bulk('restore')">恢复本页</el-button></div></div>
+    <div class="section-heading review-heading"><div><h2>样本审核</h2><span class="section-subtitle">{{ total }} 条可审核样本；已替代版本默认隐藏</span></div></div>
+    <div class="review-filterbar">
+      <div class="filter-controls">
+        <el-select v-model="filters.review_status" clearable placeholder="全部审核状态"><el-option label="待审核" value="pending" /><el-option label="已通过" value="approved" /><el-option label="已拒绝" value="rejected" /></el-select>
+        <el-select v-model="filters.validation_status" clearable placeholder="全部校验状态"><el-option label="校验通过" value="passed" /><el-option label="校验失败" value="failed" /></el-select>
+        <el-input v-model="filters.keyword" clearable placeholder="搜索问题、回答或消息内容" @keyup.enter="applyFilters" />
+        <el-button type="primary" @click="applyFilters">筛选</el-button>
+        <el-button text :disabled="!filters.review_status && !filters.validation_status && !filters.keyword" @click="clearFilters">清除</el-button>
+      </div>
+      <div class="page-actions"><span>当前页 {{ samples.length }} 条</span><el-button type="success" plain :disabled="!samples.length" @click="bulk('approved')">通过本页</el-button><el-button plain :disabled="!samples.length" @click="bulk('rejected')">拒绝本页</el-button></div>
+    </div>
     <el-empty v-if="!loading && !samples.length" :description="activeStatuses.has(run?.status) ? '正在生成样本，完成后会在这里显示' : '当前没有样本可审核'" />
     <el-table v-else v-loading="loading" :data="samples" class="samples-table" stripe @row-click="openDetail">
       <el-table-column label="样本内容" min-width="340"><template #default="{ row }"><div class="sample-title">{{ excerpt(row) }}</div><small class="sample-id">#{{ row.id.slice(0, 8) }} · {{ row.messages.length }} 条消息</small></template></el-table-column>
@@ -125,7 +154,7 @@ onUnmounted(() => clearTimeout(timer))
       <el-table-column label="状态" width="120"><template #default="{ row }"><el-tag :type="sampleStatus(row)[1]" effect="light" round>{{ sampleStatus(row)[0] }}</el-tag></template></el-table-column>
       <el-table-column label="操作" width="90"><template #default="{ row }"><el-button text type="primary" @click.stop="openDetail(row)">查看</el-button></template></el-table-column>
     </el-table>
-    <div v-if="samples.length" class="table-pagination"><el-button :disabled="page === 1" @click="page--; loadSamples()">上一页</el-button><span>第 {{ page }} 页</span><el-button :disabled="samples.length < limit" @click="page++; loadSamples()">下一页</el-button></div>
+    <div v-if="samples.length" class="table-pagination"><el-button :disabled="page === 1" @click="page--; loadSamples()">上一页</el-button><span>第 {{ page }} 页</span><el-button :disabled="page * limit >= total" @click="page++; loadSamples()">下一页</el-button></div>
   </section>
   <section class="section-card export-card"><div><h2>导出训练数据</h2><p>仅导出校验通过、审核通过且未删除的样本。</p></div><div class="export-controls"><el-select v-model="exportForm.format" aria-label="导出格式"><el-option label="ShareGPT" value="sharegpt" /><el-option label="Alpaca" value="alpaca" /></el-select><el-select v-model="exportForm.file_type" aria-label="文件类型"><el-option label="JSONL" value="jsonl" /><el-option label="JSON" value="json" /></el-select><el-button type="primary" :loading="busy" :icon="Download" @click="exportSamples">生成文件</el-button><el-button v-if="downloadUrl" link type="primary" @click="downloadExport">下载文件</el-button></div></section>
   <el-drawer v-model="drawer" :title="`样本 #${detail?.id?.slice(0, 8) || ''}`" size="min(680px, 100%)" class="sample-drawer">
@@ -134,6 +163,6 @@ onUnmounted(() => clearTimeout(timer))
       <div class="drawer-section"><h3>来源内容</h3><pre class="source-preview">{{ detail.chunk_content || '无来源内容' }}</pre></div>
       <div class="drawer-section"><h3>校验结果</h3><el-alert v-if="!detail.issues.length" title="结构与内容校验通过" type="success" :closable="false" show-icon /><el-alert v-for="issue in detail.issues" :key="issue.rule" :title="`${issue.rule}：${issue.message}`" type="warning" :closable="false" class="issue-alert" /></div>
     </template>
-    <template #footer><div v-if="detail" class="drawer-actions"><el-button type="success" :icon="Check" :loading="busy" @click="review('approved')">通过</el-button><el-button :loading="busy" @click="review('rejected')">拒绝</el-button><el-button :loading="busy" @click="review('pending')">待审核</el-button><el-button type="danger" plain :loading="busy" @click="toggleDeleted">{{ detail.is_deleted ? '恢复样本' : '软删除' }}</el-button></div></template>
+    <template #footer><div v-if="detail" class="drawer-actions"><el-button :loading="busy" @click="regenerate">重新生成此内容块</el-button><el-button type="success" :icon="Check" :loading="busy" @click="review('approved')">通过</el-button><el-button :loading="busy" @click="review('rejected')">拒绝</el-button><el-button type="danger" plain :loading="busy" @click="toggleDeleted">{{ detail.is_deleted ? '恢复样本' : '软删除' }}</el-button></div></template>
   </el-drawer>
 </template>

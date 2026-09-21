@@ -93,6 +93,14 @@ class TrainingSampleRow(Base):
     __table_args__ = (
         Index("ix_training_samples_export", "project_id", "review_status", "validation_status", "is_deleted"),
         Index("ix_training_samples_dedupe", "project_id", "content_hash"),
+        Index(
+            "ix_training_samples_search",
+            "project_id",
+            "review_status",
+            "validation_status",
+            "is_deleted",
+            "superseded_at",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -105,6 +113,7 @@ class TrainingSampleRow(Base):
     review_status: Mapped[str] = mapped_column(String(32), default="pending")
     validation_status: Mapped[str] = mapped_column(String(32), default="pending")
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

@@ -45,8 +45,12 @@ from dataset_builder.models import ExportFileType, ExportFormat, Message, Pipeli
 
 logger = logging.getLogger(__name__)
 ACTIVE_STATUSES = {
-    PipelineStatus.CREATED, PipelineStatus.IMPORTING, PipelineStatus.PARSING,
-    PipelineStatus.SPLITTING, PipelineStatus.GENERATING, PipelineStatus.CLEANING,
+    PipelineStatus.CREATED,
+    PipelineStatus.IMPORTING,
+    PipelineStatus.PARSING,
+    PipelineStatus.SPLITTING,
+    PipelineStatus.GENERATING,
+    PipelineStatus.CLEANING,
     PipelineStatus.VALIDATING,
 }
 
@@ -93,7 +97,8 @@ def sessions_for(request: Request) -> async_sessionmaker[AsyncSession]:
 
 
 async def selected_client(
-    factory: async_sessionmaker[AsyncSession], model_id: UUID | None,
+    factory: async_sessionmaker[AsyncSession],
+    model_id: UUID | None,
     client_factory: Callable[[LLMSettings], object],
 ) -> object:
     if model_id is None:
@@ -118,8 +123,12 @@ async def close_client(client: object) -> None:
 
 
 async def run_build_in_background(
-    factory: async_sessionmaker[AsyncSession], client: object, run_id: UUID,
-    path: Path, temporary: TemporaryDirectory[str], app: FastAPI,
+    factory: async_sessionmaker[AsyncSession],
+    client: object,
+    run_id: UUID,
+    path: Path,
+    temporary: TemporaryDirectory[str],
+    app: FastAPI,
 ) -> None:
     try:
         await BuildService(factory, client).execute_build(run_id, path)
@@ -134,7 +143,11 @@ async def run_build_in_background(
 
 
 async def run_retry_in_background(
-    factory: async_sessionmaker[AsyncSession], client: object, project_id: UUID, run_id: UUID, app: FastAPI,
+    factory: async_sessionmaker[AsyncSession],
+    client: object,
+    project_id: UUID,
+    run_id: UUID,
+    app: FastAPI,
 ) -> None:
     try:
         await BuildService(factory, client).retry_failed(project_id)
@@ -215,31 +228,41 @@ def create_app(
         trash: bool = False,
     ) -> list[dict]:
         async with factory() as session:
-            query = select(ProjectRow).where(
-                ProjectRow.deleted_at.is_not(None) if trash else ProjectRow.deleted_at.is_(None)
-            ).order_by(ProjectRow.created_at.desc(), ProjectRow.id)
+            query = (
+                select(ProjectRow)
+                .where(ProjectRow.deleted_at.is_not(None) if trash else ProjectRow.deleted_at.is_(None))
+                .order_by(ProjectRow.created_at.desc(), ProjectRow.id)
+            )
             projects = (await session.scalars(query)).all()
             result = []
             for project in projects:
                 run = await session.scalar(
-                    select(PipelineRunRow).where(PipelineRunRow.project_id == project.id)
-                    .order_by(PipelineRunRow.started_at.desc(), PipelineRunRow.id.desc()).limit(1)
+                    select(PipelineRunRow)
+                    .where(PipelineRunRow.project_id == project.id)
+                    .order_by(PipelineRunRow.started_at.desc(), PipelineRunRow.id.desc())
+                    .limit(1)
                 )
                 count = await session.scalar(
                     select(func.count(TrainingSampleRow.id)).where(TrainingSampleRow.project_id == project.id)
                 )
-                result.append({
-                    "id": str(project.id), "name": project.name, "created_at": project.created_at,
-                    "sample_count": count, "run_status": run.status if run else None,
-                    "failed_chunks": run.failed_items if run else 0,
-                    "run_id": str(run.id) if run else None,
-                    "deleted_at": project.deleted_at,
-                })
+                result.append(
+                    {
+                        "id": str(project.id),
+                        "name": project.name,
+                        "created_at": project.created_at,
+                        "sample_count": count,
+                        "run_status": run.status if run else None,
+                        "failed_chunks": run.failed_items if run else 0,
+                        "run_id": str(run.id) if run else None,
+                        "deleted_at": project.deleted_at,
+                    }
+                )
             return result
 
     @app.delete("/api/projects/{project_id}")
     async def trash_project(
-        project_id: UUID, request: Request,
+        project_id: UUID,
+        request: Request,
         factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
     ) -> dict:
         async with factory() as session:
@@ -247,10 +270,18 @@ def create_app(
                 await ProjectService(session).get_active(project_id)
             except LookupError as exc:
                 raise api_error(exc) from exc
-            active = await session.scalar(select(PipelineRunRow.id).where(
-                PipelineRunRow.project_id == project_id,
-                PipelineRunRow.id.in_(request.app.state.active_run_ids),
-            ).limit(1)) if request.app.state.active_run_ids else None
+            active = (
+                await session.scalar(
+                    select(PipelineRunRow.id)
+                    .where(
+                        PipelineRunRow.project_id == project_id,
+                        PipelineRunRow.id.in_(request.app.state.active_run_ids),
+                    )
+                    .limit(1)
+                )
+                if request.app.state.active_run_ids
+                else None
+            )
             if active:
                 raise HTTPException(status_code=409, detail="构建任务运行中，暂不能删除数据集")
             await ProjectService(session).move_to_trash(project_id)
@@ -287,7 +318,8 @@ def create_app(
         async with factory() as session:
             try:
                 return await ModelDiscoveryService(
-                    session, request.app.state.model_catalog_factory,
+                    session,
+                    request.app.state.model_catalog_factory,
                 ).discover(payload)
             except (ValueError, LookupError) as exc:
                 raise api_error(exc) from exc
@@ -300,7 +332,8 @@ def create_app(
     ) -> dict[str, list[dict[str, object]]]:
         async with factory() as session:
             return await ModelConnectionService(
-                session, request.app.state.model_catalog_factory,
+                session,
+                request.app.state.model_catalog_factory,
             ).check(payload)
 
     @app.post("/api/models", status_code=201)
@@ -317,7 +350,8 @@ def create_app(
 
     @app.put("/api/models/{model_id}")
     async def update_model(
-        model_id: UUID, payload: ModelConfigInput,
+        model_id: UUID,
+        payload: ModelConfigInput,
         factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
     ) -> dict:
         async with factory() as session:
@@ -341,7 +375,7 @@ def create_app(
 
     @app.get("/api/workspace/settings")
     async def get_workspace_settings(
-        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)]
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
     ) -> dict:
         async with factory() as session:
             return await WorkspaceService(session).settings()
@@ -378,7 +412,8 @@ def create_app(
 
     @app.put("/api/prompts/{prompt_id}")
     async def update_prompt(
-        prompt_id: UUID, payload: PromptTemplateInput,
+        prompt_id: UUID,
+        payload: PromptTemplateInput,
         factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
     ) -> dict:
         async with factory() as session:
@@ -446,9 +481,19 @@ def create_app(
             path = await save_upload(file, temporary, filename)
             columns = tuple(column.strip() for column in (content_columns or "").split(",") if column.strip())
             summary = await BuildService(factory, client).prepare_build(
-                path, project_name or path.stem, generator, splitter, max_chars, overlap,
-                content_field or None, columns, entrypoint="web", parser_workers=parser_workers,
-                prompt_preset=prompt_preset, custom_prompt=custom_prompt, model_id=model_id,
+                path,
+                project_name or path.stem,
+                generator,
+                splitter,
+                max_chars,
+                overlap,
+                content_field or None,
+                columns,
+                entrypoint="web",
+                parser_workers=parser_workers,
+                prompt_preset=prompt_preset,
+                custom_prompt=custom_prompt,
+                model_id=model_id,
             )
         except Exception as exc:
             temporary.cleanup()
@@ -500,20 +545,32 @@ def create_app(
             path = await save_upload(file, temporary, filename)
             columns = tuple(column.strip() for column in (content_columns or "").split(",") if column.strip())
             preview = await BuildService(factory, None).preview(
-                path, generator, splitter, max_chars, overlap, content_field or None, columns,
-                parser_workers, custom_prompt, model_id,
+                path,
+                generator,
+                splitter,
+                max_chars,
+                overlap,
+                content_field or None,
+                columns,
+                parser_workers,
+                custom_prompt,
+                model_id,
             )
             max_output_tokens = None
             if model_id is not None:
                 async with factory() as session:
                     max_output_tokens = (await ModelConfigService(session).settings_for(model_id)).max_tokens
             return {
-                "fingerprint": preview.fingerprint, "document_count": len(preview.documents),
-                "chunk_count": len(preview.chunks), "estimated_request_upper_bound": len(preview.chunks),
+                "fingerprint": preview.fingerprint,
+                "document_count": len(preview.documents),
+                "chunk_count": len(preview.chunks),
+                "estimated_request_upper_bound": len(preview.chunks),
                 "max_output_tokens": max_output_tokens,
                 "chunks": [
                     {
-                        "index": index, "content": chunk.content, "length": len(chunk.content),
+                        "index": index,
+                        "content": chunk.content,
+                        "length": len(chunk.content),
                         "source_name": next(
                             document.source_name for document in preview.documents if document.id == chunk.document_id
                         ),
@@ -528,15 +585,22 @@ def create_app(
 
     @app.post("/api/projects/preview/generate")
     async def generate_preview(
-        file: Annotated[UploadFile, File()], request: Request,
+        file: Annotated[UploadFile, File()],
+        request: Request,
         factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
-        fingerprint: Annotated[str, Form(min_length=1)], chunk_indices: Annotated[str, Form(min_length=1)],
-        generator: Annotated[str, Form()] = "qa", splitter: Annotated[str, Form()] = "auto",
-        max_chars: Annotated[int, Form(ge=1)] = 1000, overlap: Annotated[int, Form(ge=0)] = 0,
+        fingerprint: Annotated[str, Form(min_length=1)],
+        chunk_indices: Annotated[str, Form(min_length=1)],
+        generator: Annotated[str, Form()] = "qa",
+        splitter: Annotated[str, Form()] = "auto",
+        max_chars: Annotated[int, Form(ge=1)] = 1000,
+        overlap: Annotated[int, Form(ge=0)] = 0,
         parser_workers: Annotated[int | None, Form(ge=1, le=16)] = None,
-        content_field: Annotated[str | None, Form()] = None, content_columns: Annotated[str | None, Form()] = None,
-        model_id: Annotated[UUID | None, Form()] = None, prompt_preset: Annotated[str, Form()] = "default",
-        custom_prompt: Annotated[str | None, Form()] = None, prompt_id: Annotated[str | None, Form()] = None,
+        content_field: Annotated[str | None, Form()] = None,
+        content_columns: Annotated[str | None, Form()] = None,
+        model_id: Annotated[UUID | None, Form()] = None,
+        prompt_preset: Annotated[str, Form()] = "default",
+        custom_prompt: Annotated[str | None, Form()] = None,
+        prompt_id: Annotated[str | None, Form()] = None,
     ) -> dict:
         filename = upload_filename(file)
         try:
@@ -565,8 +629,18 @@ def create_app(
             path = await save_upload(file, temporary, filename)
             columns = tuple(column.strip() for column in (content_columns or "").split(",") if column.strip())
             samples, issues = await BuildService(factory, client).generate_preview(
-                path, indices, fingerprint, generator, splitter, max_chars, overlap, content_field or None,
-                columns, parser_workers, custom_prompt, model_id,
+                path,
+                indices,
+                fingerprint,
+                generator,
+                splitter,
+                max_chars,
+                overlap,
+                content_field or None,
+                columns,
+                parser_workers,
+                custom_prompt,
+                model_id,
             )
             return {
                 "samples": [sample.model_dump(mode="json") for sample in samples],
@@ -591,8 +665,10 @@ def create_app(
             except LookupError as exc:
                 raise api_error(exc) from exc
             run = await session.scalar(
-                select(PipelineRunRow).where(PipelineRunRow.project_id == project_id)
-                .order_by(PipelineRunRow.started_at.desc(), PipelineRunRow.id.desc()).limit(1)
+                select(PipelineRunRow)
+                .where(PipelineRunRow.project_id == project_id)
+                .order_by(PipelineRunRow.started_at.desc(), PipelineRunRow.id.desc())
+                .limit(1)
             )
             if run is None:
                 raise HTTPException(status_code=404, detail="项目没有构建记录")
@@ -617,7 +693,8 @@ def create_app(
 
     @app.get("/api/runs/{run_id}")
     async def get_run(
-        run_id: UUID, request: Request,
+        run_id: UUID,
+        request: Request,
         factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
     ) -> dict:
         async with factory() as session:
@@ -629,25 +706,34 @@ def create_app(
             except LookupError as exc:
                 raise api_error(exc) from exc
             interrupted = (
-                run.status in ACTIVE_STATUSES and run.configuration.get("entrypoint") == "web"
+                run.status in ACTIVE_STATUSES
+                and run.configuration.get("entrypoint") == "web"
                 and run.id not in request.app.state.active_run_ids
             )
-            failed = (await session.scalars(
-                select(ChunkRow).join(SourceDocumentRow)
-                .where(SourceDocumentRow.project_id == run.project_id, ChunkRow.generation_status == "failed")
-                .order_by(ChunkRow.created_at, ChunkRow.id).limit(20)
-            )).all()
+            failed = (
+                await session.scalars(
+                    select(ChunkRow)
+                    .join(SourceDocumentRow)
+                    .where(SourceDocumentRow.project_id == run.project_id, ChunkRow.generation_status == "failed")
+                    .order_by(ChunkRow.created_at, ChunkRow.id)
+                    .limit(20)
+                )
+            ).all()
             sample_count = await session.scalar(
                 select(func.count(TrainingSampleRow.id)).where(TrainingSampleRow.project_id == run.project_id)
             )
             return {
-                "id": str(run.id), "project_id": str(run.project_id),
+                "id": str(run.id),
+                "project_id": str(run.project_id),
                 "status": "interrupted" if interrupted else run.status,
                 "current_stage": run.current_stage,
-                "total_items": run.total_items, "completed_items": run.completed_items,
-                "failed_items": run.failed_items, "sample_count": sample_count,
+                "total_items": run.total_items,
+                "completed_items": run.completed_items,
+                "failed_items": run.failed_items,
+                "sample_count": sample_count,
                 "error_message": run.error_message,
-                "started_at": run.started_at, "finished_at": run.finished_at,
+                "started_at": run.started_at,
+                "finished_at": run.finished_at,
                 "failed_chunks": [
                     {"id": str(chunk.id), "error": chunk.metadata_.get("generation_error", "生成失败")}
                     for chunk in failed
@@ -668,9 +754,64 @@ def create_app(
                 raise api_error(exc) from exc
             return await ReviewService(session).list_samples(project_id, limit, offset)
 
+    @app.get("/api/projects/{project_id}/samples/search")
+    async def search_samples(
+        project_id: UUID,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+        page: Annotated[int, Query(ge=1)] = 1,
+        size: Annotated[int, Query(ge=1, le=200)] = 20,
+        review_status: str | None = None,
+        validation_status: str | None = None,
+        is_deleted: bool | None = None,
+        source_document_id: UUID | None = None,
+        issue_rule: str | None = None,
+        keyword: str | None = None,
+    ) -> dict:
+        async with factory() as session:
+            try:
+                return await ReviewService(session).search_samples(
+                    project_id,
+                    page,
+                    size,
+                    review_status=review_status,
+                    validation_status=validation_status,
+                    is_deleted=is_deleted,
+                    source_document_id=source_document_id,
+                    issue_rule=issue_rule,
+                    keyword=keyword,
+                )
+            except (ValueError, LookupError) as exc:
+                raise api_error(exc) from exc
+
+    @app.post("/api/projects/{project_id}/chunks/{chunk_id}/regenerate")
+    async def regenerate_chunk(
+        project_id: UUID,
+        chunk_id: UUID,
+        request: Request,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+    ) -> dict:
+        async with factory() as session:
+            original = await session.scalar(
+                select(PipelineRunRow)
+                .where(PipelineRunRow.project_id == project_id)
+                .order_by(PipelineRunRow.started_at.desc())
+            )
+            if original is None:
+                raise HTTPException(status_code=404, detail="项目没有构建记录")
+            model_id = UUID(original.configuration["model_id"]) if original.configuration.get("model_id") else None
+        client = await selected_client(factory, model_id, request.app.state.client_factory)
+        try:
+            result = await BuildService(factory, client).regenerate_chunk(project_id, chunk_id)
+            return {"project_id": result.project_id, "run_id": result.run_id, "sample_count": result.sample_count}
+        except (ValueError, LookupError) as exc:
+            raise api_error(exc) from exc
+        finally:
+            await close_client(client)
+
     @app.patch("/api/projects/{project_id}/samples/bulk")
     async def bulk_samples(
-        project_id: UUID, payload: BulkPayload,
+        project_id: UUID,
+        payload: BulkPayload,
         factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
     ) -> dict:
         async with factory() as session:
@@ -694,7 +835,8 @@ def create_app(
 
     @app.put("/api/samples/{sample_id}/messages")
     async def edit_sample(
-        sample_id: UUID, payload: MessagesPayload,
+        sample_id: UUID,
+        payload: MessagesPayload,
         factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
     ) -> dict:
         async with factory() as session:
@@ -707,7 +849,8 @@ def create_app(
 
     @app.patch("/api/samples/{sample_id}/review")
     async def review_sample(
-        sample_id: UUID, payload: ReviewPayload,
+        sample_id: UUID,
+        payload: ReviewPayload,
         factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
     ) -> dict:
         async with factory() as session:
@@ -720,7 +863,8 @@ def create_app(
 
     @app.patch("/api/samples/{sample_id}/deleted")
     async def delete_sample(
-        sample_id: UUID, payload: DeletedPayload,
+        sample_id: UUID,
+        payload: DeletedPayload,
         factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
     ) -> dict:
         async with factory() as session:
@@ -733,7 +877,8 @@ def create_app(
 
     @app.post("/api/projects/{project_id}/exports")
     async def export_project(
-        project_id: UUID, payload: ExportPayload,
+        project_id: UUID,
+        payload: ExportPayload,
         factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
         directory: Annotated[Path, Depends(export_dir_for)],
     ) -> dict:
