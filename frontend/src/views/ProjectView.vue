@@ -45,6 +45,12 @@ const distillationSources = ref([])
 const distillationPrompts = ref([])
 const distillationModels = ref([])
 const distillationForm = reactive({ target_count: 100, keyword: '', source_document_ids: [], prompt_mode: 'template', prompt_id: '', custom_prompt: '', model_id: '' })
+const comparisonDialog = ref(false)
+const comparisonLoading = ref(false)
+const comparisonItems = ref([])
+const comparisonTotal = ref(0)
+const comparisonIndex = ref(0)
+const currentComparison = computed(() => comparisonItems.value[comparisonIndex.value] || null)
 let timer = null
 const activeStatuses = new Set(['created', 'importing', 'parsing', 'splitting', 'generating', 'augmenting', 'distilling', 'cleaning', 'validating'])
 const statusNames = { created: '任务已创建', importing: '正在导入', parsing: '正在解析', splitting: '正在切分', generating: '正在生成', augmenting: '正在扩增', distilling: '正在蒸馏', cleaning: '正在清洗', validating: '正在校验', ready_for_review: '等待审核', completed: '处理完成', failed: '构建失败', interrupted: '任务已中断' }
@@ -55,6 +61,40 @@ function sampleStatus(item) {
   return { approved: ['已通过', 'success'], rejected: ['已拒绝', 'danger'], pending: ['待审核', 'warning'] }[item.review_status] || ['未知', 'info']
 }
 function excerpt(item) { return item.messages.find(message => message.role === 'user')?.content || item.messages[0]?.content || '空消息' }
+function comparisonTurns(item) {
+  if (!item) return []
+  const sourceAnswers = item.source_messages.filter(message => message.role === 'assistant')
+  const turns = []
+  let user = ''
+  let answerIndex = 0
+  for (const message of item.candidate_messages) {
+    if (message.role === 'user') user = message.content
+    if (message.role === 'assistant') {
+      turns.push({
+        user,
+        original: sourceAnswers[answerIndex]?.content || '',
+        teacher: message.content,
+      })
+      answerIndex += 1
+    }
+  }
+  return turns
+}
+function diffParts(value, comparison) {
+  if (!value) return []
+  if (value === comparison) return [{ text: value, changed: false }]
+  let start = 0
+  const maxStart = Math.min(value.length, comparison.length)
+  while (start < maxStart && value[start] === comparison[start]) start += 1
+  let end = 0
+  const maxEnd = Math.min(value.length - start, comparison.length - start)
+  while (end < maxEnd && value[value.length - 1 - end] === comparison[comparison.length - 1 - end]) end += 1
+  const parts = []
+  if (start) parts.push({ text: value.slice(0, start), changed: false })
+  parts.push({ text: value.slice(start, end ? value.length - end : value.length), changed: true })
+  if (end) parts.push({ text: value.slice(value.length - end), changed: false })
+  return parts.filter(part => part.text)
+}
 async function loadSamples() {
   loading.value = true
   try {
@@ -184,6 +224,31 @@ async function startDistillation() {
   catch (error) { notifyError(error, ElMessage) }
   finally { distillationLoading.value = false }
 }
+async function openComparisonReview() {
+  comparisonLoading.value = true
+  try {
+    const result = await api(`/api/projects/${route.params.id}/distillations/review-queue?limit=200`)
+    comparisonItems.value = result.items
+    comparisonTotal.value = result.total
+    comparisonIndex.value = 0
+    comparisonDialog.value = true
+  } catch (error) { notifyError(error, ElMessage) }
+  finally { comparisonLoading.value = false }
+}
+async function decideComparison(decision) {
+  if (!currentComparison.value) return
+  comparisonLoading.value = true
+  try {
+    await api(`/api/samples/${currentComparison.value.id}/distillation-review`, jsonOptions('PATCH', { decision }))
+    const labels = { adopt_teacher: '已采用教师回答', keep_original: '已保留原回答', keep_both: '已保留两个版本' }
+    comparisonItems.value.splice(comparisonIndex.value, 1)
+    comparisonTotal.value = Math.max(0, comparisonTotal.value - 1)
+    if (comparisonIndex.value >= comparisonItems.value.length) comparisonIndex.value = Math.max(0, comparisonItems.value.length - 1)
+    await Promise.all([loadSamples(), loadQuality()])
+    ElMessage.success(labels[decision])
+  } catch (error) { notifyError(error, ElMessage) }
+  finally { comparisonLoading.value = false }
+}
 async function previewAugmentation() {
   augmentationLoading.value = true
   try { augmentationPreview.value = await api(`/api/projects/${route.params.id}/augmentations/preview`, jsonOptions('POST', augmentationPayload())); }
@@ -219,7 +284,7 @@ onUnmounted(() => clearTimeout(timer))
 </script>
 
 <template>
-  <div class="project-actions"><el-button type="primary" :icon="MagicStick" @click="openAugmentation">扩展数据集</el-button><el-button plain :icon="MagicStick" @click="openDistillation">教师答案蒸馏</el-button><el-button :icon="RefreshRight" @click="reload">刷新</el-button><el-button v-if="run?.failed_items" type="warning" :icon="RefreshRight" @click="retry">{{ run?.run_type === 'augmentation' ? '重试扩增任务' : run?.run_type === 'distillation' ? '重试蒸馏任务' : '重试失败内容块' }}</el-button><el-button type="danger" plain :icon="Delete" @click="trash">移入回收站</el-button></div>
+  <div class="project-actions"><el-button type="primary" :icon="MagicStick" @click="openAugmentation">扩展数据集</el-button><el-button plain :icon="MagicStick" @click="openDistillation">教师答案蒸馏</el-button><el-button plain :icon="Check" @click="openComparisonReview">蒸馏对比审核</el-button><el-button :icon="RefreshRight" @click="reload">刷新</el-button><el-button v-if="run?.failed_items" type="warning" :icon="RefreshRight" @click="retry">{{ run?.run_type === 'augmentation' ? '重试扩增任务' : run?.run_type === 'distillation' ? '重试蒸馏任务' : '重试失败内容块' }}</el-button><el-button type="danger" plain :icon="Delete" @click="trash">移入回收站</el-button></div>
   <section class="section-card progress-card">
     <div class="section-heading"><div><h2>构建进度</h2><span class="section-subtitle" role="status">{{ statusNames[run?.status] || '正在读取任务状态' }}</span></div><strong class="progress-number">{{ run?.completed_items || 0 }} <span>/ {{ run?.total_items || 0 }}</span></strong></div>
     <el-progress :percentage="progressPercent" :stroke-width="10" :show-text="false" />
@@ -285,6 +350,21 @@ onUnmounted(() => clearTimeout(timer))
       <div class="augmentation-block"><el-segmented v-model="distillationForm.prompt_mode" :options="[{ label: '使用模板', value: 'template' }, { label: '临时自定义', value: 'custom' }]" style="margin-bottom: 10px" /><el-select v-if="distillationForm.prompt_mode === 'template'" v-model="distillationForm.prompt_id" placeholder="选择蒸馏模板"><el-option v-for="prompt in distillationPrompts" :key="prompt.id" :label="prompt.name" :value="prompt.id" /></el-select><el-input v-else v-model="distillationForm.custom_prompt" type="textarea" :rows="3" placeholder="例如：严格依据来源，保留专业术语并给出清晰、完整的回答。" /><p class="field-hint">教师不会看到旧回答。多轮样本会逐轮生成，并使用新教师回答继续后续对话。</p></div>
     </div><aside class="augmentation-ledger"><div><span>计划升级</span><strong>{{ distillationPreview?.target_count || distillationForm.target_count }}</strong><small>条待审核候选</small></div><div><span>合格原样本</span><strong>{{ distillationPreview?.eligible_count ?? '—' }}</strong><small>仅取审核和校验均通过的未替代样本</small></div><div class="augmentation-note"><b>替代规则</b><p>候选通过人工审核后，原样本才会标记为已替代，可随时追溯来源。</p></div></aside></div>
     <template #footer><div class="augmentation-footer"><span v-if="distillationPreview">预计 {{ distillationPreview.estimated_requests }} 次教师调用</span><span v-else>先检查可升级样本，不会调用模型</span><div><el-button @click="distillationDialog = false">取消</el-button><el-button :loading="distillationLoading" @click="previewDistillation">检查计划</el-button><el-button type="primary" :loading="distillationLoading" :disabled="!distillationPreview" @click="startDistillation">开始升级</el-button></div></div></template>
+  </el-dialog>
+  <el-dialog v-model="comparisonDialog" class="comparison-dialog" width="min(1280px, calc(100% - 28px))" destroy-on-close>
+    <template #header><div class="comparison-title"><div><strong>蒸馏对比审核</strong><span>依据来源判断哪一个回答更适合进入训练集</span></div><b v-if="currentComparison">{{ comparisonIndex + 1 }} / {{ comparisonTotal }}</b></div></template>
+    <div v-loading="comparisonLoading" class="comparison-shell">
+      <el-empty v-if="!currentComparison" description="没有待审核的蒸馏候选" :image-size="70" />
+      <template v-else>
+        <div class="comparison-grid">
+          <section class="comparison-source"><header><span>事实依据</span><small>Source Chunk</small></header><pre>{{ currentComparison.chunk_content || '来源内容不可用' }}</pre></section>
+          <section class="comparison-version original-version"><header><span>原回答</span><small>#{{ currentComparison.source_sample_id?.slice(0, 8) }}</small></header><div class="comparison-turns"><article v-for="(turn, index) in comparisonTurns(currentComparison)" :key="index"><p class="comparison-question"><b>问题 {{ index + 1 }}</b>{{ turn.user }}</p><p class="comparison-answer"><span v-for="(part, partIndex) in diffParts(turn.original, turn.teacher)" :key="partIndex" :class="{ 'is-changed': part.changed }">{{ part.text }}</span></p></article></div></section>
+          <section class="comparison-version teacher-version"><header><span>教师回答</span><small>#{{ currentComparison.id.slice(0, 8) }}</small></header><div class="comparison-turns"><article v-for="(turn, index) in comparisonTurns(currentComparison)" :key="index"><p class="comparison-question"><b>问题 {{ index + 1 }}</b>{{ turn.user }}</p><p class="comparison-answer"><span v-for="(part, partIndex) in diffParts(turn.teacher, turn.original)" :key="partIndex" :class="{ 'is-changed': part.changed }">{{ part.text }}</span></p></article></div></section>
+        </div>
+        <div class="comparison-nav"><el-button :disabled="comparisonIndex === 0" @click="comparisonIndex--">上一条</el-button><span>蓝色与琥珀色标记两版回答发生变化的部分</span><el-button :disabled="comparisonIndex >= comparisonItems.length - 1" @click="comparisonIndex++">下一条</el-button></div>
+      </template>
+    </div>
+    <template #footer><div v-if="currentComparison" class="comparison-actions"><p><strong>做出版本决策</strong><span>采用教师会替代原样本；两者保留会同时进入可导出数据。</span></p><div><el-button :loading="comparisonLoading" @click="decideComparison('keep_original')">保留原回答</el-button><el-button :loading="comparisonLoading" @click="decideComparison('keep_both')">两者保留</el-button><el-button type="primary" :icon="Check" :loading="comparisonLoading" @click="decideComparison('adopt_teacher')">采用教师回答</el-button></div></div></template>
   </el-dialog>
   <el-drawer v-model="drawer" :title="`样本 #${detail?.id?.slice(0, 8) || ''}`" size="min(680px, 100%)" class="sample-drawer">
     <template v-if="detail"><div class="drawer-status"><el-tag :type="sampleStatus(detail)[1]" round>{{ sampleStatus(detail)[0] }}</el-tag><span>来源内容块 #{{ detail.chunk_id.slice(0, 8) }}</span><span v-if="detail.parent_sample_id">扩增自样本 #{{ detail.parent_sample_id.slice(0, 8) }}</span></div>

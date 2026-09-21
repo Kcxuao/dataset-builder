@@ -66,6 +66,63 @@ class ReviewService:
         row = await self._row(sample_id)
         return await self._view(row)
 
+    async def distillation_queue(
+        self,
+        project_id: UUID,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, object]:
+        if not 1 <= limit <= 200 or offset < 0:
+            raise ValueError("limit 必须在 1 到 200 之间，offset 不能为负数")
+        project = await self.session.get(ProjectRow, project_id)
+        if project is None or project.deleted_at is not None:
+            raise LookupError("数据集不存在")
+        rows = (
+            await self.session.scalars(
+                select(TrainingSampleRow)
+                .where(
+                    TrainingSampleRow.project_id == project_id,
+                    TrainingSampleRow.review_status == "pending",
+                    TrainingSampleRow.validation_status == "passed",
+                    TrainingSampleRow.is_deleted.is_(False),
+                    TrainingSampleRow.superseded_at.is_(None),
+                )
+                .order_by(TrainingSampleRow.created_at, TrainingSampleRow.id)
+            )
+        ).all()
+        candidates = [row for row in rows if row.metadata_.get("generator") == "distillation"]
+        selected = candidates[offset : offset + limit]
+        return {
+            "items": [await self._distillation_comparison(row) for row in selected],
+            "total": len(candidates),
+            "limit": limit,
+            "offset": offset,
+        }
+
+    async def decide_distillation(self, sample_id: UUID, decision: str) -> dict[str, object]:
+        if decision not in {"adopt_teacher", "keep_original", "keep_both"}:
+            raise ValueError("蒸馏审核决策无效")
+        row = await self._row(sample_id)
+        if row.metadata_.get("generator") != "distillation":
+            raise ValueError("当前样本不是蒸馏候选")
+        if row.review_status != "pending":
+            raise ValueError("当前蒸馏候选已经完成审核")
+        source = await self._distillation_source(row)
+        if source is None:
+            raise ValueError("蒸馏候选缺少可追溯的原样本")
+        if decision in {"adopt_teacher", "keep_both"}:
+            self._check_approval(row, ReviewStatus.APPROVED)
+            row.review_status = ReviewStatus.APPROVED.value
+        else:
+            row.review_status = ReviewStatus.REJECTED.value
+        row.metadata_ = {**row.metadata_, "distillation_decision": decision}
+        row.updated_at = utc_now()
+        if decision == "adopt_teacher":
+            source.superseded_at = utc_now()
+            source.updated_at = utc_now()
+        await self.session.flush()
+        return await self._distillation_comparison(row)
+
     async def edit(self, sample_id: UUID, messages: list[Message]) -> dict[str, object]:
         row = await self._row(sample_id)
         original = TrainingSample.model_validate(
@@ -179,6 +236,33 @@ class ReviewService:
         if source is not None and source.project_id == row.project_id:
             source.superseded_at = utc_now()
             source.updated_at = utc_now()
+
+    async def _distillation_source(self, row: TrainingSampleRow) -> TrainingSampleRow | None:
+        source_id = row.metadata_.get("distillation_source_id")
+        if not source_id:
+            return None
+        try:
+            source_uuid = UUID(str(source_id))
+        except ValueError:
+            return None
+        source = await self.session.get(TrainingSampleRow, source_uuid)
+        if source is None or source.project_id != row.project_id:
+            return None
+        return source
+
+    async def _distillation_comparison(self, row: TrainingSampleRow) -> dict[str, object]:
+        source = await self._distillation_source(row)
+        chunk = await self.session.get(ChunkRow, row.chunk_id)
+        return {
+            "id": str(row.id),
+            "source_sample_id": str(source.id) if source else None,
+            "source_messages": source.messages if source else [],
+            "candidate_messages": row.messages,
+            "chunk_content": chunk.content if chunk else None,
+            "review_status": row.review_status,
+            "validation_status": row.validation_status,
+            "decision": row.metadata_.get("distillation_decision"),
+        }
 
     async def set_deleted(self, sample_id: UUID, deleted: bool) -> dict[str, object]:
         row = await self._row(sample_id)

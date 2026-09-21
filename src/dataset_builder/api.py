@@ -71,6 +71,10 @@ class ReviewPayload(BaseModel):
     status: ReviewStatus
 
 
+class DistillationDecisionPayload(BaseModel):
+    decision: Literal["adopt_teacher", "keep_original", "keep_both"]
+
+
 class DeletedPayload(BaseModel):
     is_deleted: bool
 
@@ -1225,6 +1229,19 @@ def create_app(
             except LookupError as exc:
                 raise api_error(exc) from exc
 
+    @app.get("/api/projects/{project_id}/distillations/review-queue")
+    async def distillation_review_queue(
+        project_id: UUID,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> dict:
+        async with factory() as session:
+            try:
+                return await ReviewService(session).distillation_queue(project_id, limit, offset)
+            except (ValueError, LookupError) as exc:
+                raise api_error(exc) from exc
+
     @app.put("/api/samples/{sample_id}/messages")
     async def edit_sample(
         sample_id: UUID,
@@ -1248,6 +1265,20 @@ def create_app(
         async with factory() as session:
             try:
                 result = await ReviewService(session).set_review(sample_id, payload.status)
+                await session.commit()
+                return result
+            except (ValueError, LookupError) as exc:
+                raise api_error(exc) from exc
+
+    @app.patch("/api/samples/{sample_id}/distillation-review")
+    async def review_distillation(
+        sample_id: UUID,
+        payload: DistillationDecisionPayload,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+    ) -> dict:
+        async with factory() as session:
+            try:
+                result = await ReviewService(session).decide_distillation(sample_id, payload.decision)
                 await session.commit()
                 return result
             except (ValueError, LookupError) as exc:

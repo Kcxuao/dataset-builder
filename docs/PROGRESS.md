@@ -93,6 +93,7 @@
 - 完成 PostgreSQL / SQLite 启动级切换：新增 `DATABASE_PROVIDER` 与 `SQLITE_PATH`，SQLite 使用 aiosqlite、外键、WAL 和 30 秒写入等待；ORM JSON 使用 PostgreSQL JSONB 变体，历史迁移兼容两种方言。处理设置页展示当前后端；切换后端必须重启并单独迁移，不自动搬迁数据。`uv run ruff check .`、`uv run pytest tests/unit`（82 通过）和 `pnpm build` 通过；未执行真实 SQLite 或 PostgreSQL 迁移验证。
 - 完成提示词驱动的多轮样本生成：提示词模板保存单轮/多轮默认值，构建和扩增可按当前任务覆盖；QA、Instruction 与扩增的多轮结果均以完整 `messages` 保存为一条训练样本，预览指纹和运行配置锁定实际模式。内置提示词默认单轮；多轮样本可无损导出 ShareGPT，Alpaca 继续明确拒绝。`uv run ruff check .`、`uv run pytest tests/unit`（86 通过）和 `pnpm build` 通过；未执行真实数据库迁移验证。
 - 完成教师答案蒸馏：新增独立的 `distillation_jobs` 与后台运行类型，仅从审核和校验通过、未删除、未替代样本生成候选；教师请求不包含旧 assistant 回答，只依据来源和原问题独立作答，多轮样本逐轮使用新教师回答继续生成。候选经清洗、校验后统一待审核，单条或批量审核通过都会将可追溯的原样本标记为已替代。新增三种蒸馏提示词预设、提示词模板模式、项目页聚焦式蒸馏 Dialog、按对话轮次估算的调用数量、进度/重试、来源标记、失败原因展示、任务与逐轮 INFO 日志和质量概览来源统计；旧任务输出协议可兼容，重试计数按 Job 当前状态重算。候选插入先于 Job 外键关联显式 flush，兼容 SQLite/PostgreSQL 外键检查，并区分模型与持久化错误。`uv run ruff check .`、`uv run pytest tests/unit`（91 通过）和 `pnpm build` 通过；未执行真实数据库迁移或真实模型调用验证。
+- 完成蒸馏对比审核工作台：新增待审核蒸馏队列与专用决策接口，三栏同屏展示来源 Chunk、原回答和教师回答，并对两版变化内容分别使用琥珀与蓝色标记。支持采用教师回答、保留原回答、两者保留，决策写入候选元数据且严格控制原样本是否被替代；支持多轮逐组比较、前后切换和移动端堆叠布局。`uv run ruff check .`、`uv run pytest tests/unit`（94 通过）和 `pnpm build` 通过。
 
 ## 下一步任务
 

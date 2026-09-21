@@ -142,6 +142,8 @@ class Formatter(Protocol):
 
 蒸馏由独立应用服务编排，只读取审核和校验通过、未删除且未替代的原样本。教师请求不包含旧 assistant 内容，只提供来源、原 system/user 和此前新生成的教师回复；多轮样本按轮次独立生成，以保持真实上下文。候选通过人工审核后，Review 服务标记原样本为已替代；批量审核也遵循相同规则。
 
+蒸馏对比审核由 Review 服务统一处理，API 返回候选、原样本和 Chunk 的组合视图。`adopt_teacher` 批准候选并替代原样本，`keep_original` 拒绝候选，`keep_both` 批准候选但保留原样本；决策写入候选 metadata，不新增重复的版本表。
+
 ### ValidationIssue
 
 - id
