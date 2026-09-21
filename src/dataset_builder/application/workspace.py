@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataset_builder.db.orm import ModelConfigRow, PromptTemplateRow, WorkspaceSettingsRow
-from dataset_builder.generators.prompts import list_prompt_presets, resolve_prompt
+from dataset_builder.generators.prompts import list_prompt_presets
 
 
 class WorkspaceSettingsInput(BaseModel):
@@ -19,6 +19,7 @@ class PromptTemplateInput(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     mode: str
     instruction: str = Field(min_length=1)
+    multi_turn: bool = False
 
 
 class WorkspaceService:
@@ -47,7 +48,7 @@ class WorkspaceService:
     async def list_prompts(self) -> list[dict[str, object]]:
         builtins = [
             {"id": f"builtin:{mode}:{item['id']}", "name": item["name"], "mode": mode,
-             "instruction": item["prompt"], "builtin": True}
+             "instruction": item["prompt"], "multi_turn": bool(item["multi_turn"]), "builtin": True}
             for mode, items in list_prompt_presets().items() for item in items
         ]
         rows = (await self.session.scalars(select(PromptTemplateRow).order_by(PromptTemplateRow.created_at))).all()
@@ -55,7 +56,9 @@ class WorkspaceService:
 
     async def create_prompt(self, data: PromptTemplateInput) -> dict[str, object]:
         self._validate_prompt(data)
-        row = PromptTemplateRow(name=data.name.strip(), mode=data.mode, instruction=data.instruction.strip())
+        row = PromptTemplateRow(
+            name=data.name.strip(), mode=data.mode, instruction=data.instruction.strip(), multi_turn=data.multi_turn
+        )
         self.session.add(row)
         await self.session.flush()
         return self._view(row)
@@ -66,6 +69,7 @@ class WorkspaceService:
         row.name = data.name.strip()
         row.mode = data.mode
         row.instruction = data.instruction.strip()
+        row.multi_turn = data.multi_turn
         await self.session.flush()
         return self._view(row)
 
@@ -73,19 +77,19 @@ class WorkspaceService:
         await self.session.delete(await self._prompt(prompt_id))
         await self.session.flush()
 
-    async def resolve_prompt(self, mode: str, prompt_id: str) -> tuple[str, str]:
+    async def resolve_prompt(self, mode: str, prompt_id: str) -> tuple[str, str | None, bool]:
         if prompt_id.startswith("builtin:"):
             parts = prompt_id.split(":")
             if len(parts) != 3 or parts[1] != mode:
                 raise ValueError("提示词与生成方式不匹配")
-            return parts[2], resolve_prompt(mode, parts[2])
+            return parts[2], None, False
         try:
             row = await self._prompt(UUID(prompt_id))
         except (ValueError, LookupError) as exc:
             raise ValueError("提示词模板不存在") from exc
         if row.mode != mode:
             raise ValueError("提示词与生成方式不匹配")
-        return "custom", resolve_prompt(mode, "custom", row.instruction)
+        return "custom", row.instruction, row.multi_turn
 
     async def _prompt(self, prompt_id: UUID) -> PromptTemplateRow:
         row = await self.session.get(PromptTemplateRow, prompt_id)
@@ -102,4 +106,4 @@ class WorkspaceService:
     @staticmethod
     def _view(row: PromptTemplateRow) -> dict[str, object]:
         return {"id": str(row.id), "name": row.name, "mode": row.mode,
-                "instruction": row.instruction, "builtin": False}
+                "instruction": row.instruction, "multi_turn": row.multi_turn, "builtin": False}

@@ -17,6 +17,7 @@ from dataset_builder.db.orm import (
     ProjectRow,
     TrainingSampleRow,
 )
+from dataset_builder.generators.conversation import ConversationItem, validate_turn_mode
 from dataset_builder.llm import LLMClient, QuotaExceededError
 from dataset_builder.models import Message, MessageRole, PipelineStatus, TrainingSample, utc_now
 from dataset_builder.validators import SampleValidator
@@ -30,8 +31,8 @@ STRATEGIES = {
 }
 
 
-class AugmentationItem(BaseModel):
-    messages: list[Message] = Field(min_length=2)
+class AugmentationItem(ConversationItem):
+    pass
 
 
 class AugmentationResponse(BaseModel):
@@ -45,6 +46,7 @@ class AugmentationOptions:
     keyword: str | None
     source_document_ids: tuple[UUID, ...]
     prompt_text: str
+    multi_turn: bool
     model_id: UUID | None
 
 
@@ -112,6 +114,7 @@ class AugmentationService:
                     "keyword": options.keyword,
                     "source_document_ids": [str(value) for value in options.source_document_ids],
                     "prompt_text": options.prompt_text,
+                    "multi_turn": options.multi_turn,
                     "model_id": str(options.model_id) if options.model_id else None,
                     "llm": self._llm_signature(),
                 },
@@ -168,6 +171,7 @@ class AugmentationService:
             try:
                 messages = self._messages(seed, chunk, job.strategy, job.round, run.configuration["prompt_text"])
                 response = await self.client.generate(messages, AugmentationResponse)
+                validate_turn_mode(response.items[0].messages, bool(run.configuration.get("multi_turn", False)))
                 await self._finish_job(run_id, job.id, response.items[0], None)
             except Exception as exc:
                 await self._finish_job(run_id, job.id, None, f"{type(exc).__name__}: {exc}"[:500])
@@ -314,6 +318,7 @@ class AugmentationService:
             "strategies": options.strategies, "target": options.target_count, "keyword": options.keyword,
             "sources": [str(value) for value in options.source_document_ids],
             "prompt": options.prompt_text,
+            "multi_turn": options.multi_turn,
             "model": str(options.model_id),
         }
         return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()

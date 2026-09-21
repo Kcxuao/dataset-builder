@@ -68,6 +68,7 @@ class BuildService:
         parser_workers: int = 1,
         prompt_text: str | None = None,
         model_id: UUID | None = None,
+        multi_turn: bool = False,
     ) -> PreviewResult:
         self._validate_options(
             path,
@@ -103,6 +104,7 @@ class BuildService:
                 parser_workers,
                 prompt_text,
                 model_id,
+                multi_turn,
             ),
         )
 
@@ -120,6 +122,7 @@ class BuildService:
         parser_workers: int = 1,
         prompt_text: str | None = None,
         model_id: UUID | None = None,
+        multi_turn: bool = False,
     ) -> tuple[list[TrainingSample], list[ValidationIssue]]:
         if not chunk_indices or len(chunk_indices) > 3 or len(set(chunk_indices)) != len(chunk_indices):
             raise ValueError("试生成必须选择 1 到 3 个不重复的内容块")
@@ -134,6 +137,7 @@ class BuildService:
             parser_workers,
             prompt_text,
             model_id,
+            multi_turn,
         )
         if fingerprint != preview.fingerprint:
             raise ValueError("预览已失效：文件或配置已变化，请重新预览")
@@ -141,7 +145,7 @@ class BuildService:
             raise ValueError("试生成选择了不存在的内容块")
         project_id = uuid4()
         generator = (QAGenerator if generator_mode == "qa" else InstructionGenerator)(
-            self.client, project_id, system_prompt=prompt_text
+            self.client, project_id, system_prompt=prompt_text, multi_turn=multi_turn
         )
         samples: list[TrainingSample] = []
         issues: list[ValidationIssue] = []
@@ -186,6 +190,7 @@ class BuildService:
         parser_workers: int,
         prompt_text: str | None,
         model_id: UUID | None,
+        multi_turn: bool,
     ) -> str:
         payload = {
             "file_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
@@ -199,6 +204,7 @@ class BuildService:
             "parser_workers": parser_workers,
             "prompt_text": prompt_text,
             "model_id": str(model_id) if model_id else None,
+            "multi_turn": multi_turn,
         }
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=list).encode()
         return hashlib.sha256(encoded).hexdigest()
@@ -292,6 +298,7 @@ class BuildService:
         prompt_preset: str = "default",
         custom_prompt: str | None = None,
         model_id: UUID | None = None,
+        multi_turn: bool = False,
     ) -> BuildSummary:
         prepared = await self.prepare_build(
             path,
@@ -307,6 +314,7 @@ class BuildService:
             prompt_preset,
             custom_prompt,
             model_id,
+            multi_turn,
         )
         return await self.execute_build(prepared.run_id, path)
 
@@ -325,6 +333,7 @@ class BuildService:
         prompt_preset: str = "default",
         custom_prompt: str | None = None,
         model_id: UUID | None = None,
+        multi_turn: bool = False,
     ) -> BuildSummary:
         if not project_name.strip():
             raise ValueError("project_name must not be blank")
@@ -338,7 +347,7 @@ class BuildService:
             content_columns,
             parser_workers,
         )
-        prompt_text = resolve_prompt(generator_mode, prompt_preset, custom_prompt)
+        prompt_text = resolve_prompt(generator_mode, prompt_preset, custom_prompt, multi_turn)
 
         project_id, run_id = uuid4(), uuid4()
         async with self.sessions() as session:
@@ -360,6 +369,7 @@ class BuildService:
                         "parser_workers": parser_workers,
                         "prompt_preset": prompt_preset,
                         "prompt_text": prompt_text,
+                        "multi_turn": multi_turn,
                         "model_id": str(model_id) if model_id else None,
                         "llm": self._llm_signature(),
                     },
@@ -390,6 +400,7 @@ class BuildService:
                 tuple(configuration["content_columns"]),
                 configuration.get("parser_workers", 1),
                 configuration.get("prompt_text"),
+                bool(configuration.get("multi_turn", False)),
             )
         except Exception as exc:
             async with self.sessions() as session:
@@ -414,6 +425,7 @@ class BuildService:
         content_columns: tuple[str, ...],
         parser_workers: int,
         prompt_text: str | None,
+        multi_turn: bool,
     ) -> BuildSummary:
         async with self.sessions() as session:
             run = await session.get(PipelineRunRow, run_id)
@@ -488,7 +500,7 @@ class BuildService:
         logger.info("开始生成样本：运行编号 %s，文档 %d 个，内容块 %d 个", run_id, len(documents), len(chunks))
 
         sample_count, failed_count = await self._generate_chunks(
-            project_id, run_id, chunks, generator_mode, set(), prompt_text
+            project_id, run_id, chunks, generator_mode, set(), prompt_text, multi_turn
         )
         return BuildSummary(project_id, run_id, len(documents), len(chunks), sample_count, failed_count)
 
@@ -550,7 +562,13 @@ class BuildService:
             run_id = run.id
         logger.info("开始重试失败内容块：运行编号 %s，待处理 %d 个", run_id, len(chunks))
         sample_count, failed_count = await self._generate_chunks(
-            project_id, run_id, chunks, mode, {(project_id, value) for value in hashes}, prompt_text
+            project_id,
+            run_id,
+            chunks,
+            mode,
+            {(project_id, value) for value in hashes},
+            prompt_text,
+            bool(run.configuration.get("multi_turn", False)),
         )
         return BuildSummary(project_id, run_id, document_count, len(chunks), sample_count, failed_count)
 
@@ -602,7 +620,9 @@ class BuildService:
                 content=chunk.content,
                 metadata=chunk.metadata_,
             )
-        sample_count, failed_count = await self._generate_chunks(project_id, run_id, [item], mode, set(), prompt)
+        sample_count, failed_count = await self._generate_chunks(
+            project_id, run_id, [item], mode, set(), prompt, bool(original.configuration.get("multi_turn", False))
+        )
         async with self.sessions() as session:
             passed = await session.scalar(
                 select(func.count(TrainingSampleRow.id)).where(
@@ -626,9 +646,10 @@ class BuildService:
         generator_mode: str,
         seen: set[tuple[UUID, str]],
         prompt_text: str | None = None,
+        multi_turn: bool = False,
     ) -> tuple[int, int]:
         generator = (QAGenerator if generator_mode == "qa" else InstructionGenerator)(
-            self.client, project_id, system_prompt=prompt_text
+            self.client, project_id, system_prompt=prompt_text, multi_turn=multi_turn
         )
         concurrency = max(1, getattr(getattr(self.client, "settings", None), "concurrency_limit", 1))
         logger.info("开始并发生成：运行编号 %s，模型请求并发上限 %d", run_id, concurrency)

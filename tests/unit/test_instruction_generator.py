@@ -3,6 +3,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
+from dataset_builder.generators.conversation import ConversationResponse
 from dataset_builder.generators.instruction import InstructionGenerator, InstructionResponse
 from dataset_builder.models import Chunk, Message, MessageRole
 
@@ -51,3 +52,24 @@ async def test_instruction_generator_rejects_empty_chunk() -> None:
 def test_instruction_response_requires_nonblank_fields() -> None:
     with pytest.raises(ValidationError):
         InstructionResponse.model_validate({"items": [{"instruction": " ", "response": "A"}]})
+
+
+@pytest.mark.asyncio
+async def test_instruction_multi_turn_keeps_the_messages_together() -> None:
+    class MultiTurnFake:
+        async def generate(
+            self, messages: list[Message], response_model: type[ConversationResponse]
+        ) -> ConversationResponse:
+            assert response_model is ConversationResponse
+            return ConversationResponse.model_validate({"items": [{"messages": [
+                {"role": "user", "content": "任务"},
+                {"role": "assistant", "content": "结果"},
+                {"role": "user", "content": "补充"},
+                {"role": "assistant", "content": "补充结果"},
+            ]}]})
+
+    sample = (await InstructionGenerator(MultiTurnFake(), uuid4(), multi_turn=True).generate(
+        Chunk(document_id=uuid4(), index=0, content="Source")
+    ))[0]
+
+    assert [message.content for message in sample.messages] == ["任务", "结果", "补充", "补充结果"]

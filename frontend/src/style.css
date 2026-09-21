@@ -244,6 +244,7 @@ button:focus-visible, a:focus-visible, .upload-zone:focus-within { outline: 3px 
 .model-actions, .prompt-actions { display: flex; flex-wrap: wrap; margin: auto -12px -10px; padding-top: 15px; }
 .prompt-segment { margin-bottom: 20px; }
 .prompt-card { min-height: 210px; }
+.prompt-tags { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .prompt-mark { height: 30px; color: #8ca0ee; font: 700 38px Georgia, serif; line-height: .9; }
 .prompt-card p { flex: 1; margin: 12px 0 0; color: var(--text-muted); font-size: 13px; line-height: 1.6; }
 .dialog-form .el-form-item { min-width: 0; }

@@ -5,10 +5,18 @@ INSTRUCTION_FORMAT = (
     '只返回一个 json 对象，不要解释或代码块，格式为 '
     '{"items": [{"instruction": "...", "response": "..."}]}。'
 )
-AUGMENTATION_FORMAT = (
+SINGLE_TURN_AUGMENTATION_FORMAT = (
     '只返回一个 json 对象，不要解释或代码块，格式为 '
     '{"items": [{"messages": [{"role": "user", "content": "..."}, '
     '{"role": "assistant", "content": "..."}]}]}。'
+)
+MULTI_TURN_FORMAT = (
+    '只返回一个 json 对象，不要解释或代码块，格式为 '
+    '{"items": [{"messages": [{"role": "user", "content": "第一问"}, '
+    '{"role": "assistant", "content": "第一答"}, '
+    '{"role": "user", "content": "追问"}, '
+    '{"role": "assistant", "content": "第二答"}]}]}。'
+    '每个 items 元素是一条完整训练样本，必须至少包含两轮 user/assistant 对话，不能拆成多个 items。'
 )
 
 PROMPT_PRESETS = {
@@ -37,14 +45,22 @@ PROMPT_PRESETS = {
 }
 
 
-def list_prompt_presets() -> dict[str, list[dict[str, str]]]:
+def list_prompt_presets() -> dict[str, list[dict[str, str | bool]]]:
     return {
-        mode: [{"id": item["id"], "name": item["name"], "prompt": item["instruction"]} for item in items]
+        mode: [
+            {"id": item["id"], "name": item["name"], "prompt": item["instruction"], "multi_turn": False}
+            for item in items
+        ]
         for mode, items in PROMPT_PRESETS.items()
     }
 
 
-def resolve_prompt(mode: str, preset: str = "default", custom_prompt: str | None = None) -> str:
+def resolve_prompt(
+    mode: str,
+    preset: str = "default",
+    custom_prompt: str | None = None,
+    multi_turn: bool = False,
+) -> str:
     if mode not in PROMPT_PRESETS:
         raise ValueError("生成方式无效")
     if preset == "custom":
@@ -56,5 +72,12 @@ def resolve_prompt(mode: str, preset: str = "default", custom_prompt: str | None
         if selected is None:
             raise ValueError("提示词预设不存在")
         instruction = selected["instruction"]
-    output_format = QA_FORMAT if mode == "qa" else INSTRUCTION_FORMAT if mode == "instruction" else AUGMENTATION_FORMAT
+    if multi_turn:
+        output_format = MULTI_TURN_FORMAT
+    elif mode == "qa":
+        output_format = QA_FORMAT
+    elif mode == "instruction":
+        output_format = INSTRUCTION_FORMAT
+    else:
+        output_format = SINGLE_TURN_AUGMENTATION_FORMAT
     return instruction + "\n" + output_format

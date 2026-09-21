@@ -13,6 +13,10 @@ def test_prompt_presets_and_custom_prompt() -> None:
     assert "pairs" in resolve_prompt("qa", "concise")
     assert "自定义规则" in resolve_prompt("instruction", "custom", " 自定义规则 ")
     assert "items" in resolve_prompt("instruction", "custom", "自定义规则")
+    multi_turn = resolve_prompt("qa", "default", multi_turn=True)
+    assert "messages" in multi_turn
+    assert "至少包含两轮" in multi_turn
+    assert all(item["multi_turn"] is False for items in presets.values() for item in items)
 
 
 @pytest.mark.parametrize("mode,preset,custom", [

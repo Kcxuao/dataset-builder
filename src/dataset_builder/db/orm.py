@@ -68,6 +68,7 @@ class PromptTemplateRow(Base):
     name: Mapped[str] = mapped_column(String(255))
     mode: Mapped[str] = mapped_column(String(32))
     instruction: Mapped[str] = mapped_column(Text)
+    multi_turn: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

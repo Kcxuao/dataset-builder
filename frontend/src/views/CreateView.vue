@@ -26,7 +26,7 @@ const selectedChunkCount = computed(() => selectedChunks.value.length)
 const fileType = computed(() => file.value?.name.split('.').pop()?.toLowerCase() || '')
 const needsContentField = computed(() => ['json', 'jsonl'].includes(fileType.value))
 const needsContentColumns = computed(() => fileType.value === 'csv')
-const form = reactive({ project_name: '', generator: 'qa', model_id: '', prompt_id: '', splitter: 'auto', max_chars: 1000, overlap: 0, content_field: '', content_columns: '' })
+const form = reactive({ project_name: '', generator: 'qa', model_id: '', prompt_id: '', multi_turn: false, splitter: 'auto', max_chars: 1000, overlap: 0, content_field: '', content_columns: '' })
 const filteredPrompts = computed(() => prompts.value.filter(item => item.mode === form.generator))
 const currentPrompt = computed(() => prompts.value.find(item => item.id === form.prompt_id))
 
@@ -36,7 +36,8 @@ function selectFile(event) {
   clearPreview()
 }
 function clearPreview() { preview.value = null; trial.value = null; selectedChunks.value = []; previewDialogVisible.value = false }
-function chooseMode() { form.prompt_id = filteredPrompts.value[0]?.id || ''; clearPreview() }
+function syncPromptMode() { form.multi_turn = Boolean(currentPrompt.value?.multi_turn); clearPreview() }
+function chooseMode() { form.prompt_id = filteredPrompts.value[0]?.id || ''; syncPromptMode() }
 function roleLabel(role) { return { system: '系统', user: '用户', assistant: '助手' }[role] || role }
 async function load() {
   try {
@@ -56,7 +57,7 @@ function validateForm() {
 function buildData(extra = {}) {
   const data = new FormData()
   data.append('file', file.value)
-  for (const key of ['project_name', 'generator', 'splitter', 'max_chars', 'overlap', 'prompt_id']) {
+  for (const key of ['project_name', 'generator', 'splitter', 'max_chars', 'overlap', 'prompt_id', 'multi_turn']) {
     if (form[key] !== '') data.append(key, form[key])
   }
   if (needsContentField.value) data.append('content_field', form.content_field.trim())
@@ -130,7 +131,8 @@ onMounted(load)
         <el-form-item v-if="needsContentColumns" label="CSV 内容列" required><el-input v-model="form.content_columns" placeholder="例如 title,body" /><p class="field-hint">多个列名用英文逗号分隔。</p></el-form-item>
         <h3 class="form-group-title">生成配置</h3>
         <div class="form-two"><el-form-item label="生成方式"><el-select v-model="form.generator" @change="chooseMode"><el-option label="问答样本" value="qa" /><el-option label="指令样本" value="instruction" /></el-select></el-form-item><el-form-item label="生成模型"><el-select v-model="form.model_id"><el-option label="工作区默认模型" value="" /><el-option v-for="model in models" :key="model.id" :label="`${model.name} · ${model.model}`" :value="model.id" /></el-select></el-form-item></div>
-        <el-form-item label="提示词模板"><el-select v-model="form.prompt_id" placeholder="选择提示词"><el-option v-for="prompt in filteredPrompts" :key="prompt.id" :label="prompt.name" :value="prompt.id" /></el-select><p v-if="currentPrompt" class="field-hint">{{ currentPrompt.instruction }}</p></el-form-item>
+        <el-form-item label="提示词模板"><el-select v-model="form.prompt_id" placeholder="选择提示词" @change="syncPromptMode"><el-option v-for="prompt in filteredPrompts" :key="prompt.id" :label="prompt.name" :value="prompt.id" /></el-select><p v-if="currentPrompt" class="field-hint">{{ currentPrompt.instruction }}</p></el-form-item>
+        <el-form-item label="本次对话结构"><el-switch v-model="form.multi_turn" inline-prompt active-text="多轮" inactive-text="单轮" @change="clearPreview" /><p class="field-hint">多轮样本会保留追问与上下文；导出请选择 ShareGPT。</p></el-form-item>
         <h3 class="form-group-title">切分配置</h3>
         <div class="form-two"><el-form-item label="切分方式"><el-select v-model="form.splitter"><el-option label="自动切分" value="auto" /><el-option label="按段落" value="paragraph" /><el-option label="固定长度" value="fixed" /><el-option label="Markdown 标题" value="markdown" /></el-select></el-form-item><el-form-item label="最大字符数"><el-input-number v-model="form.max_chars" :min="1" :controls="false" /></el-form-item></div>
         <el-form-item label="重叠字符数"><el-input-number v-model="form.overlap" :min="0" :controls="false" /></el-form-item>

@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from dataset_builder.config import LLMSettings
+from dataset_builder.generators.conversation import ConversationResponse
 from dataset_builder.generators.qa import QAGenerator, QAResponse
 from dataset_builder.llm.client import LLMResponseError, OpenAICompatibleClient, is_quota_error, parse_response
 from dataset_builder.models import Chunk, Message, MessageRole
@@ -85,6 +86,42 @@ async def test_empty_chunk_does_not_call_llm() -> None:
     with pytest.raises(ValueError, match="empty Chunk"):
         await QAGenerator(fake, uuid4()).generate(Chunk(document_id=uuid4(), index=0, content="  "))
     assert fake.calls == []
+
+
+@pytest.mark.asyncio
+async def test_qa_multi_turn_keeps_a_complete_conversation_in_one_sample() -> None:
+    class MultiTurnFake:
+        async def generate(
+            self, messages: list[Message], response_model: type[ConversationResponse]
+        ) -> ConversationResponse:
+            assert response_model is ConversationResponse
+            return ConversationResponse.model_validate({"items": [{"messages": [
+                {"role": "user", "content": "第一问"},
+                {"role": "assistant", "content": "第一答"},
+                {"role": "user", "content": "追问"},
+                {"role": "assistant", "content": "第二答"},
+            ]}]})
+
+    sample = (await QAGenerator(MultiTurnFake(), uuid4(), multi_turn=True).generate(
+        Chunk(document_id=uuid4(), index=0, content="Source text")
+    ))[0]
+
+    assert [(message.role, message.content) for message in sample.messages] == [
+        (MessageRole.USER, "第一问"),
+        (MessageRole.ASSISTANT, "第一答"),
+        (MessageRole.USER, "追问"),
+        (MessageRole.ASSISTANT, "第二答"),
+    ]
+
+
+def test_qa_multi_turn_response_requires_two_rounds() -> None:
+    item = ConversationResponse.model_validate({"items": [{"messages": [
+        {"role": "user", "content": "问题"}, {"role": "assistant", "content": "回答"},
+    ]}]}).items[0]
+    with pytest.raises(ValueError, match="至少包含两轮"):
+        from dataset_builder.generators.conversation import validate_turn_mode
+
+        validate_turn_mode(item.messages, True)
 
 
 @pytest.mark.parametrize("text", [

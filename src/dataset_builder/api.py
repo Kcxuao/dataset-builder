@@ -43,7 +43,7 @@ from dataset_builder.db.orm import (
 )
 from dataset_builder.db.session import create_engine, create_session_factory
 from dataset_builder.exporters.service import SampleExportService
-from dataset_builder.generators.prompts import list_prompt_presets
+from dataset_builder.generators.prompts import list_prompt_presets, resolve_prompt
 from dataset_builder.llm import OpenAICompatibleClient, OpenAICompatibleModelCatalog
 from dataset_builder.models import ExportFileType, ExportFormat, Message, PipelineStatus, ReviewStatus, utc_now
 
@@ -89,6 +89,7 @@ class AugmentationPayload(BaseModel):
     source_document_ids: list[UUID] = Field(default_factory=list, max_length=100)
     prompt_id: str | None = None
     custom_prompt: str | None = Field(default=None, max_length=10000)
+    multi_turn: bool | None = None
     model_id: UUID | None = None
     fingerprint: str | None = None
 
@@ -488,7 +489,7 @@ def create_app(
                 raise api_error(exc) from exc
 
     @app.get("/api/prompt-presets")
-    async def prompt_presets() -> dict[str, list[dict[str, str]]]:
+    async def prompt_presets() -> dict[str, list[dict[str, str | bool]]]:
         return list_prompt_presets()
 
     async def augmentation_options(
@@ -500,19 +501,22 @@ def create_app(
             custom = payload.custom_prompt.strip()
             if not custom:
                 raise ValueError("自定义提示词不能为空")
-            from dataset_builder.generators.prompts import resolve_prompt
-            prompt_text = resolve_prompt("augmentation", "custom", custom)
+            multi_turn = bool(payload.multi_turn)
+            prompt_text = resolve_prompt("augmentation", "custom", custom, multi_turn)
         elif payload.prompt_id:
-            _, prompt_text = await workspace.resolve_prompt("augmentation", payload.prompt_id)
+            preset, custom, template_multi_turn = await workspace.resolve_prompt("augmentation", payload.prompt_id)
+            multi_turn = template_multi_turn if payload.multi_turn is None else payload.multi_turn
+            prompt_text = resolve_prompt("augmentation", preset, custom, multi_turn)
         else:
-            from dataset_builder.generators.prompts import resolve_prompt
-            prompt_text = resolve_prompt("augmentation", "balanced")
+            multi_turn = bool(payload.multi_turn)
+            prompt_text = resolve_prompt("augmentation", "balanced", multi_turn=multi_turn)
         return AugmentationOptions(
             strategies=strategies,
             target_count=payload.target_count,
             keyword=payload.keyword.strip() if payload.keyword else None,
             source_document_ids=tuple(dict.fromkeys(payload.source_document_ids)),
             prompt_text=prompt_text,
+            multi_turn=multi_turn,
             model_id=payload.model_id,
         )
 
@@ -615,6 +619,7 @@ def create_app(
         prompt_preset: Annotated[str, Form()] = "default",
         custom_prompt: Annotated[str | None, Form()] = None,
         prompt_id: Annotated[str | None, Form()] = None,
+        multi_turn: Annotated[bool | None, Form()] = None,
     ) -> dict:
         filename = upload_filename(file)
         async with factory() as session:
@@ -630,9 +635,13 @@ def create_app(
             parser_workers = parser_workers or int(defaults["parser_workers"])
             if prompt_id:
                 try:
-                    prompt_preset, custom_prompt = await workspace.resolve_prompt(generator, prompt_id)
+                    prompt_preset, custom_prompt, template_multi_turn = await workspace.resolve_prompt(
+                        generator, prompt_id
+                    )
+                    multi_turn = template_multi_turn if multi_turn is None else multi_turn
                 except ValueError as exc:
                     raise api_error(exc) from exc
+            multi_turn = bool(multi_turn)
         client = await selected_client(factory, model_id, request.app.state.client_factory)
         temporary = TemporaryDirectory(prefix="dataset-builder-upload-")
         try:
@@ -652,6 +661,7 @@ def create_app(
                 prompt_preset=prompt_preset,
                 custom_prompt=custom_prompt,
                 model_id=model_id,
+                multi_turn=multi_turn,
             )
         except Exception as exc:
             temporary.cleanup()
@@ -695,6 +705,7 @@ def create_app(
         prompt_preset: Annotated[str, Form()] = "default",
         custom_prompt: Annotated[str | None, Form()] = None,
         prompt_id: Annotated[str | None, Form()] = None,
+        multi_turn: Annotated[bool | None, Form()] = None,
     ) -> dict:
         filename = upload_filename(file)
         async with factory() as session:
@@ -710,9 +721,14 @@ def create_app(
                     raise api_error(exc) from exc
             if prompt_id:
                 try:
-                    prompt_preset, custom_prompt = await workspace.resolve_prompt(generator, prompt_id)
+                    prompt_preset, custom_prompt, template_multi_turn = await workspace.resolve_prompt(
+                        generator, prompt_id
+                    )
+                    multi_turn = template_multi_turn if multi_turn is None else multi_turn
                 except ValueError as exc:
                     raise api_error(exc) from exc
+            multi_turn = bool(multi_turn)
+            prompt_text = resolve_prompt(generator, prompt_preset, custom_prompt, multi_turn)
         temporary = TemporaryDirectory(prefix="dataset-builder-preview-")
         try:
             path = await save_upload(file, temporary, filename)
@@ -726,8 +742,9 @@ def create_app(
                 content_field or None,
                 columns,
                 parser_workers,
-                custom_prompt,
+                prompt_text,
                 model_id,
+                multi_turn,
             )
             max_output_tokens = None
             if model_id is not None:
@@ -774,6 +791,7 @@ def create_app(
         prompt_preset: Annotated[str, Form()] = "default",
         custom_prompt: Annotated[str | None, Form()] = None,
         prompt_id: Annotated[str | None, Form()] = None,
+        multi_turn: Annotated[bool | None, Form()] = None,
     ) -> dict:
         filename = upload_filename(file)
         try:
@@ -793,9 +811,14 @@ def create_app(
                     raise api_error(exc) from exc
             if prompt_id:
                 try:
-                    prompt_preset, custom_prompt = await workspace.resolve_prompt(generator, prompt_id)
+                    prompt_preset, custom_prompt, template_multi_turn = await workspace.resolve_prompt(
+                        generator, prompt_id
+                    )
+                    multi_turn = template_multi_turn if multi_turn is None else multi_turn
                 except ValueError as exc:
                     raise api_error(exc) from exc
+            multi_turn = bool(multi_turn)
+            prompt_text = resolve_prompt(generator, prompt_preset, custom_prompt, multi_turn)
         client = await selected_client(factory, model_id, request.app.state.client_factory)
         temporary = TemporaryDirectory(prefix="dataset-builder-preview-")
         try:
@@ -812,8 +835,9 @@ def create_app(
                 content_field or None,
                 columns,
                 parser_workers,
-                custom_prompt,
+                prompt_text,
                 model_id,
+                multi_turn,
             )
             return {
                 "samples": [sample.model_dump(mode="json") for sample in samples],

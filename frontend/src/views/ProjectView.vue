@@ -30,7 +30,7 @@ const augmentationLoading = ref(false)
 const augmentationSources = ref([])
 const augmentationPrompts = ref([])
 const augmentationModels = ref([])
-const augmentationForm = reactive({ strategies: ['rewrite', 'angle', 'scenario'], target_count: 100, keyword: '', source_document_ids: [], prompt_mode: 'template', prompt_id: '', custom_prompt: '', model_id: '' })
+const augmentationForm = reactive({ strategies: ['rewrite', 'angle', 'scenario'], target_count: 100, keyword: '', source_document_ids: [], prompt_mode: 'template', prompt_id: '', custom_prompt: '', multi_turn: false, model_id: '' })
 const augmentationStrategies = [
   { id: 'rewrite', name: '表达改写', description: '同一事实，不同问法和表达。' },
   { id: 'angle', name: '认知角度', description: '定义、原因、过程、比较、影响。' },
@@ -124,11 +124,16 @@ async function retry() {
   catch (error) { notifyError(error, ElMessage) }
 }
 function augmentationPayload(includeFingerprint = false) {
-  const payload = { strategies: augmentationForm.strategies, target_count: augmentationForm.target_count, keyword: augmentationForm.keyword || null, source_document_ids: augmentationForm.source_document_ids, model_id: augmentationForm.model_id || null }
+  const payload = { strategies: augmentationForm.strategies, target_count: augmentationForm.target_count, keyword: augmentationForm.keyword || null, source_document_ids: augmentationForm.source_document_ids, multi_turn: augmentationForm.multi_turn, model_id: augmentationForm.model_id || null }
   if (augmentationForm.prompt_mode === 'custom') payload.custom_prompt = augmentationForm.custom_prompt
   else if (augmentationForm.prompt_id) payload.prompt_id = augmentationForm.prompt_id
   if (includeFingerprint) payload.fingerprint = augmentationPreview.value?.fingerprint
   return payload
+}
+function syncAugmentationPromptMode() {
+  const prompt = augmentationPrompts.value.find(item => item.id === augmentationForm.prompt_id)
+  augmentationForm.multi_turn = Boolean(prompt?.multi_turn)
+  augmentationPreview.value = null
 }
 async function openAugmentation() {
   augmentationLoading.value = true
@@ -136,6 +141,7 @@ async function openAugmentation() {
     const [sources, prompts, models] = await Promise.all([api(`/api/projects/${route.params.id}/augmentation-options`), api('/api/prompts'), api('/api/models')])
     augmentationSources.value = sources; augmentationPrompts.value = prompts.filter(item => item.mode === 'augmentation'); augmentationModels.value = models
     if (!augmentationForm.prompt_id) augmentationForm.prompt_id = augmentationPrompts.value[0]?.id || ''
+    syncAugmentationPromptMode()
     augmentationPreview.value = null; augmentationDialog.value = true
   } catch (error) { notifyError(error, ElMessage) }
   finally { augmentationLoading.value = false }
@@ -220,10 +226,12 @@ onUnmounted(() => clearTimeout(timer))
         <div class="augmentation-block compact-fields"><el-form label-position="top"><el-form-item label="目标新增数量"><el-input-number v-model="augmentationForm.target_count" :min="1" :max="1000" /></el-form-item><el-form-item label="生成模型"><el-select v-model="augmentationForm.model_id" clearable placeholder="工作区默认模型"><el-option v-for="model in augmentationModels" :key="model.id" :label="`${model.name} · ${model.model}`" :value="model.id" /></el-select></el-form-item></el-form></div>
         <div class="augmentation-block">
           <el-segmented v-model="augmentationForm.prompt_mode" :options="[{ label: '使用模板', value: 'template' }, { label: '临时自定义', value: 'custom' }]" style=" margin-bottom: 10px" />
-          <el-select v-if="augmentationForm.prompt_mode === 'template'" v-model="augmentationForm.prompt_id" placeholder="选择扩增模板">
+          <el-select v-if="augmentationForm.prompt_mode === 'template'" v-model="augmentationForm.prompt_id" placeholder="选择扩增模板" @change="syncAugmentationPromptMode">
             <el-option v-for="prompt in augmentationPrompts" :key="prompt.id" :label="prompt.name" :value="prompt.id" />
           </el-select>
           <el-input v-else v-model="augmentationForm.custom_prompt" type="textarea" :rows="3" placeholder="例如：保持专业术语，优先生成面向运维人员的案例式问题。" />
+          <el-switch v-model="augmentationForm.multi_turn" inline-prompt active-text="多轮" inactive-text="单轮" style="margin-top: 12px" @change="augmentationPreview = null" />
+          <p class="field-hint">多轮扩增会保留完整追问链路为一条待审核样本。</p>
         </div>
       </div>
       <aside class="augmentation-ledger"><div><span>计划规模</span><strong>{{ augmentationPreview?.target_count || augmentationForm.target_count }}</strong><small>条待审核的新样本</small></div><div><span>合格种子</span><strong>{{ augmentationPreview?.eligible_count ?? '—' }}</strong><small>仅计算审核和校验均通过的样本</small></div><div v-if="augmentationPreview" class="strategy-ledger"><h3>策略分配</h3><p v-for="item in augmentationPreview.distribution" :key="item.id"><span>{{ item.name }}</span><b>{{ item.count }} 条</b></p></div><div class="augmentation-note"><b>补生规则</b><p>重复或校验失败会自动补生；最多尝试 {{ augmentationPreview?.max_attempts || augmentationForm.target_count * 2 }} 次。</p></div></aside>

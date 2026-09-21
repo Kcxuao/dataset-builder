@@ -91,6 +91,7 @@
 - 第四阶段已完成已有训练样本导入：新增 Alpaca/ShareGPT JSON、JSONL 到统一 IR 的导入服务与独立页面 Dialog，保留文件名、行号、SourceDocument 与 Chunk 血缘，重新清洗和校验，统一设为待审核。多源原始文件构建与导出划分策略仍待实现/确认。`uv run ruff check src/dataset_builder`、`pnpm build` 通过。
 - 完成多维数据集扩增：以审核和校验通过样本为种子，可按来源和关键词筛选，支持五种策略、保存的扩增模板或临时自定义提示词。扩增前预览不调用模型；后台任务按最多两倍尝试自动补生，并保留父样本、运行和 Job 级别血缘，结果统一待审核。项目页新增聚焦式扩增 Dialog、任务进度和扩增来源标记；提示词管理支持扩增模板。`uv run ruff check .`、`uv run pytest tests/unit`（81 通过）和 `pnpm build` 通过；未执行数据库迁移或 PostgreSQL 集成验证。
 - 完成 PostgreSQL / SQLite 启动级切换：新增 `DATABASE_PROVIDER` 与 `SQLITE_PATH`，SQLite 使用 aiosqlite、外键、WAL 和 30 秒写入等待；ORM JSON 使用 PostgreSQL JSONB 变体，历史迁移兼容两种方言。处理设置页展示当前后端；切换后端必须重启并单独迁移，不自动搬迁数据。`uv run ruff check .`、`uv run pytest tests/unit`（82 通过）和 `pnpm build` 通过；未执行真实 SQLite 或 PostgreSQL 迁移验证。
+- 完成提示词驱动的多轮样本生成：提示词模板保存单轮/多轮默认值，构建和扩增可按当前任务覆盖；QA、Instruction 与扩增的多轮结果均以完整 `messages` 保存为一条训练样本，预览指纹和运行配置锁定实际模式。内置提示词默认单轮；多轮样本可无损导出 ShareGPT，Alpaca 继续明确拒绝。`uv run ruff check .`、`uv run pytest tests/unit`（86 通过）和 `pnpm build` 通过；未执行真实数据库迁移验证。
 
 ## 下一步任务
 

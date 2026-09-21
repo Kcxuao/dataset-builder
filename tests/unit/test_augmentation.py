@@ -6,6 +6,7 @@ from dataset_builder.application.augmentation import (
     AugmentationResponse,
     AugmentationService,
 )
+from dataset_builder.generators.conversation import validate_turn_mode
 from dataset_builder.generators.prompts import list_prompt_presets, resolve_prompt
 from dataset_builder.models import Message, MessageRole
 
@@ -35,3 +36,15 @@ def test_augmentation_response_requires_messages() -> None:
     assert len(STRATEGIES) == 5
     with pytest.raises(ValueError):
         AugmentationItem(messages=[Message(role=MessageRole.USER, content="只有一条")])
+
+
+def test_augmentation_multi_turn_response_keeps_all_turns_in_one_item() -> None:
+    item = AugmentationItem.model_validate({"messages": [
+        {"role": "user", "content": "第一问"},
+        {"role": "assistant", "content": "第一答"},
+        {"role": "user", "content": "追问"},
+        {"role": "assistant", "content": "第二答"},
+    ]})
+
+    validate_turn_mode(item.messages, True)
+    assert len(item.messages) == 4
