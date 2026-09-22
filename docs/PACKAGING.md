@@ -6,6 +6,8 @@
 
 首次启动会自动执行数据库迁移。可用 `DATASET_BUILDER_HOST`、`DATASET_BUILDER_PORT` 调整监听地址和端口；设置 `DATASET_BUILDER_OPEN_BROWSER=false` 可禁止自动打开浏览器。显式设置 `DATABASE_PROVIDER`、`DATABASE_URL`、`SQLITE_PATH` 或 `EXPORT_DIR` 时，启动入口不会覆盖它们。
 
+桌面发布包可在“处理设置 → 数据存储”中选择 SQLite 或 PostgreSQL、测试连接并保存。保存时会再次验证连接，成功后写入用户数据目录下的 `database.json`；密码不会返回页面。新配置需要关闭并重新启动软件后生效，数据库之间不会自动复制项目数据。
+
 ## 前置条件
 
 - 使用 `uv sync --group dev` 安装 PyInstaller 与 Nuitka。

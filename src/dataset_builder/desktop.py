@@ -10,6 +10,8 @@ import uvicorn
 from alembic import command
 from alembic.config import Config
 
+from dataset_builder.application.database_settings import DatabaseSettingsService
+
 
 def resource_root() -> Path:
     """Return the directory containing bundled static files and migrations."""
@@ -40,6 +42,9 @@ def application_data_dir() -> Path:
 def configure_desktop_environment(root: Path, data_dir: Path) -> None:
     """Configure bundled resources and safe local-storage defaults."""
     data_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("DATASET_BUILDER_HOME", str(data_dir))
+    for name, value in DatabaseSettingsService(data_dir).environment().items():
+        os.environ.setdefault(name, value)
     os.environ.setdefault("DATABASE_PROVIDER", "sqlite")
     os.environ.setdefault("SQLITE_PATH", str(data_dir / "dataset-builder.sqlite3"))
     os.environ.setdefault("EXPORT_DIR", str(data_dir / "exports"))

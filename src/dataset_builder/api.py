@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from dataset_builder.application.augmentation import AugmentationOptions, AugmentationService
 from dataset_builder.application.build import BuildService
+from dataset_builder.application.database_settings import DatabaseConnectionInput, DatabaseSettingsService
 from dataset_builder.application.distillation import DistillationOptions, DistillationService
 from dataset_builder.application.model_configs import ModelConfigInput, ModelConfigService
 from dataset_builder.application.model_discovery import (
@@ -289,6 +290,7 @@ def create_app(
     export_dir: Path | None = None,
     client_factory: Callable[[LLMSettings], object] = OpenAICompatibleClient,
     model_catalog_factory: ModelCatalogFactory = OpenAICompatibleModelCatalog,
+    database_config_dir: Path | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -312,6 +314,8 @@ def create_app(
     app.state.database_provider = "postgresql"
     app.state.client_factory = client_factory
     app.state.model_catalog_factory = model_catalog_factory
+    configured_data_dir = os.environ.get("DATASET_BUILDER_HOME")
+    app.state.database_config_dir = database_config_dir or (Path(configured_data_dir) if configured_data_dir else None)
     project_logger = logging.getLogger("dataset_builder")
     project_logger.setLevel(logging.INFO)
     if not project_logger.handlers:
@@ -330,13 +334,55 @@ def create_app(
         return FileResponse(web_dir / "index.html")
 
     @app.get("/api/system/database")
-    async def database_status(request: Request) -> dict[str, str]:
+    async def database_status(request: Request) -> dict[str, str | bool]:
         provider = request.app.state.database_provider
         return {
             "provider": provider,
             "label": "本地 SQLite" if provider == "sqlite" else "PostgreSQL",
             "scope": "单机单服务进程" if provider == "sqlite" else "标准部署",
+            "configurable": request.app.state.database_config_dir is not None,
         }
+
+    def database_settings_service(request: Request) -> DatabaseSettingsService:
+        directory = request.app.state.database_config_dir
+        if directory is None:
+            raise HTTPException(
+                status_code=409, detail="当前启动方式未设置 DATASET_BUILDER_HOME，不能在页面保存数据库配置"
+            )
+        return DatabaseSettingsService(directory)
+
+    @app.get("/api/system/database-settings")
+    async def get_database_settings(request: Request) -> dict[str, object]:
+        service = database_settings_service(request)
+        try:
+            return service.response(request.app.state.database_provider)
+        except ValueError as exc:
+            raise api_error(exc) from exc
+
+    @app.post("/api/system/database-settings/test")
+    async def test_database_settings(payload: DatabaseConnectionInput, request: Request) -> dict[str, object]:
+        service = database_settings_service(request)
+        try:
+            await service.test(payload)
+            return {"ok": True, "message": "连接成功"}
+        except (ValueError, OSError) as exc:
+            raise api_error(exc) from exc
+        except Exception as exc:
+            logger.warning("候选数据库连接测试失败：%s", type(exc).__name__)
+            detail = str(exc)[:300]
+            if payload.password:
+                detail = detail.replace(payload.password, "******")
+            raise HTTPException(status_code=422, detail=f"连接失败：{type(exc).__name__}: {detail}") from exc
+
+    @app.put("/api/system/database-settings")
+    async def save_database_settings(payload: DatabaseConnectionInput, request: Request) -> dict[str, object]:
+        service = database_settings_service(request)
+        try:
+            await service.test(payload)
+            service.save(payload)
+            return service.response(request.app.state.database_provider, restart_required=True)
+        except (ValueError, OSError) as exc:
+            raise api_error(exc) from exc
 
     @app.get("/api/projects")
     async def list_projects(

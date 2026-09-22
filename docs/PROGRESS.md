@@ -98,6 +98,8 @@
 - 完成 LLaMA-Factory 训练包：可从不可变版本生成包含 ShareGPT JSONL、`dataset_info.json`、`train_sft.yaml`、版本清单和使用说明的 ZIP；支持模型、模板、LoRA/全量微调及基础 SFT 参数配置，不保存远程服务地址或凭据，也不自动启动训练。
 - 优化前端生产构建：路由页面改为按需加载，移除 Element Plus 全量全局注册并以局部 `ElConfigProvider` 保留中文 locale。`pnpm build` 通过，入口脚本由约 1.10 MB 降至 37 kB，所有产物低于 500 kB，Vite 不再报告大 chunk 告警。
 - 新增 Linux、Windows 的 PyInstaller 与 Nuitka 原生构建脚本及共享桌面启动入口。发布包会携带前端静态资源和 Alembic 迁移，默认使用用户数据目录中的 SQLite，并在首次启动时升级数据库；构建与运行说明记录在 `docs/PACKAGING.md`。Linux PyInstaller 已完成隔离启动并成功升级 `0001` 至 `0008`；当前环境缺少 Nuitka 所需的 `patchelf`，Nuitka 产物与 Windows 产物尚待对应原生环境验收。
+- 桌面版处理设置页新增 SQLite/PostgreSQL 数据存储配置、候选连接测试、重启生效提示和导出/导入迁移引导。连接配置独立保存在用户数据目录，API 不返回密码，保存前再次测试连接；运行中的数据库不做热切换。
+- 修复数据库状态接口因布尔型 `configurable` 与字符串返回类型声明冲突而触发的 FastAPI 响应校验错误，并增加接口回归测试。
 
 ## 下一步任务
 
