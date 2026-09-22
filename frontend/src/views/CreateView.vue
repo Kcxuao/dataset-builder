@@ -29,6 +29,9 @@ const needsContentColumns = computed(() => fileType.value === 'csv')
 const form = reactive({ project_name: '', generator: 'qa', model_id: '', prompt_id: '', multi_turn: false, splitter: 'auto', max_chars: 1000, overlap: 0, content_field: '', content_columns: '' })
 const filteredPrompts = computed(() => prompts.value.filter(item => item.mode === form.generator))
 const currentPrompt = computed(() => prompts.value.find(item => item.id === form.prompt_id))
+const selectedModelName = computed(() => models.value.find(item => item.id === form.model_id)?.name || '工作区默认模型')
+const generatorName = computed(() => form.generator === 'instruction' ? '指令样本' : '问答样本')
+const splitterName = computed(() => ({ auto: '自动切分', paragraph: '按段落', fixed: '固定长度', markdown: 'Markdown 标题' })[form.splitter])
 
 function selectFile(event) {
   file.value = event.target.files?.[0] || null
@@ -176,8 +179,14 @@ onMounted(load)
         <div class="guidance-icon"><el-icon>
             <DocumentAdd />
           </el-icon></div>
-        <h3>每条样本<br />都有出处。</h3>
-        <p>系统会记录从源文档到内容块，再到训练样本的完整关联。生成后可逐条检查、修改和审核。</p>
+        <h3>本次构建</h3>
+        <p>这里汇总即将提交的配置，修改左侧表单后会同步更新。</p>
+        <dl class="build-summary">
+          <div><dt>来源</dt><dd :title="file?.name">{{ file?.name || '尚未选择文件' }}</dd></div>
+          <div><dt>生成</dt><dd>{{ generatorName }} · {{ form.multi_turn ? '多轮' : '单轮' }}</dd></div>
+          <div><dt>模型</dt><dd>{{ selectedModelName }}</dd></div>
+          <div><dt>切分</dt><dd>{{ splitterName }} · 最多 {{ form.max_chars }} 字</dd></div>
+        </dl>
         <div class="mini-flow"><span>导入</span><i></i><span>生成</span><i></i><span>审核</span><i></i><span>导出</span></div>
       </div>
       <div class="aside-note"><el-icon>

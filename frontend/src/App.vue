@@ -105,15 +105,15 @@ onMounted(() => loadProjects({ initial: true }))
     <el-config-provider :locale="zhCn">
       <div class="main-area">
         <header class="topbar">
-        <button ref="mobileMenuButton" class="mobile-menu-button" type="button" aria-label="打开菜单"
-          aria-controls="workspace-sidebar" :aria-expanded="mobileMenu" @click="openMobileMenu"><el-icon>
-            <Menu />
-          </el-icon></button>
-        <div class="breadcrumbs">工作空间 <span>/</span> {{ heading[0] }}</div>
-        <div class="topbar-right"><el-button type="primary" :icon="Plus" aria-label="新建数据集"
-            @click="navigate('/create')">新建数据集</el-button></div>
+          <button ref="mobileMenuButton" class="mobile-menu-button" type="button" aria-label="打开菜单"
+            aria-controls="workspace-sidebar" :aria-expanded="mobileMenu" @click="openMobileMenu"><el-icon>
+              <Menu />
+            </el-icon></button>
+          <div class="breadcrumbs">工作空间 <span>/</span> {{ heading[0] }}</div>
+          <div v-if="route.path !== '/create'" class="topbar-right"><el-button type="primary" :icon="Plus"
+              aria-label="新建数据集" @click="navigate('/create')">新建数据集</el-button></div>
         </header>
-        <main class="content">
+        <main class="content" :class="{ 'content-create': route.path === '/create' }">
           <div class="page-intro">
             <div>
               <h1>{{ heading[0] }}</h1>

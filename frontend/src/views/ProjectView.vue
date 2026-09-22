@@ -511,8 +511,8 @@ onUnmounted(() => clearTimeout(timer))
                 }}</span><small>{{ strategy.description }}</small></el-checkbox></el-checkbox-group>
         </div>
         <div class="augmentation-block compact-fields"><el-form label-position="top"><el-form-item
-              label="目标新增数量"><el-input-number v-model="augmentationForm.target_count" :min="1"
-                :max="1000" /></el-form-item><el-form-item label="生成模型"><el-select v-model="augmentationForm.model_id"
+              label="目标新增数量"><el-input-number v-model="augmentationForm.target_count" class="plan-count-input"
+                :min="1" :max="1000" controls-position="right" /></el-form-item><el-form-item label="生成模型"><el-select v-model="augmentationForm.model_id"
                 clearable placeholder="工作区默认模型"><el-option v-for="model in augmentationModels" :key="model.id"
                   :label="`${model.name} · ${model.model}`" :value="model.id" /></el-select></el-form-item></el-form>
         </div>
@@ -570,8 +570,8 @@ onUnmounted(() => clearTimeout(timer))
             placeholder="按样本内容关键词缩小范围（可选）" />
         </div>
         <div class="augmentation-block compact-fields"><el-form label-position="top"><el-form-item
-              label="升级数量"><el-input-number v-model="distillationForm.target_count" :min="1"
-                :max="1000" /></el-form-item><el-form-item label="教师模型"><el-select v-model="distillationForm.model_id"
+              label="升级数量"><el-input-number v-model="distillationForm.target_count" class="plan-count-input"
+                :min="1" :max="1000" controls-position="right" /></el-form-item><el-form-item label="教师模型"><el-select v-model="distillationForm.model_id"
                 clearable placeholder="工作区默认模型"><el-option v-for="model in distillationModels" :key="model.id"
                   :label="`${model.name} · ${model.model}`" :value="model.id" /></el-select></el-form-item></el-form>
         </div>
