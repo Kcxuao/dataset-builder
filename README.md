@@ -1,99 +1,221 @@
 # Dataset Builder
 
-LLM 训练数据集构建工具，可通过 CLI 或 Web 工作台完成 TXT、Markdown、JSON、JSONL、CSV 的构建、审核和导出流程。
+Dataset Builder 是一个轻量、模块化的 LLM 训练数据集构建工具。它可以把 TXT、Markdown、JSON、JSONL、CSV 等原始数据解析、切分并通过 OpenAI Compatible API 生成训练样本，再经过清洗、校验和人工审核，导出为 Alpaca 或 ShareGPT 数据集。
 
-## 数据库配置
+项目提供 Web 工作台和 CLI，两种入口复用同一套核心能力。内部使用统一的消息格式保存样本，并保留 `SourceDocument → Chunk → TrainingSample` 数据血缘，Alpaca 和 ShareGPT 仅在导出时转换。
 
-使用 Python 3.12+ 和 uv。复制 `.env.example` 为 `.env`，不要提交 `.env`。
+## 主要功能
 
-- 标准部署使用 `DATABASE_PROVIDER=postgresql` 和 `DATABASE_URL=postgresql+asyncpg://user:password@host:port/database`。
-- 本地单机使用 `DATABASE_PROVIDER=sqlite` 与可选的 `SQLITE_PATH=./dataset-builder.sqlite3`；SQLite 会开启外键、WAL 和写入等待，但不支持多服务进程同时写入。
-- 切换后端不会迁移已有数据；请通过导出和导入迁移数据。修改后端后重启服务，再执行迁移。
+- 导入 TXT、Markdown、JSON、JSONL、CSV 原始文件
+- 导入已有 Alpaca、ShareGPT JSON/JSONL 数据集
+- 支持固定长度、段落和 Markdown 标题切分
+- 使用兼容 OpenAI API 的模型生成 QA、Instruction 和多轮对话样本
+- 生成前预览 Chunk，并选择少量 Chunk 试生成
+- 空内容过滤、文本规范化、长度检查和精确去重
+- 消息结构、角色顺序和目标格式兼容性校验
+- 样本筛选、编辑、审核、删除、恢复和定向重新生成
+- 数据质量概览与来源追踪
+- 多策略数据集扩增和教师答案蒸馏
+- 蒸馏候选对比审核
+- 创建不可变数据集版本并比较版本差异
+- 导出 Alpaca/ShareGPT 的 JSON、JSONL 文件
+- 从数据集版本生成 LLaMA-Factory 训练包
+- 支持 PostgreSQL 标准部署和 SQLite 本地单机运行
 
-```bash
-uv sync
-uv run alembic upgrade head
-uv run dataset-builder --help
-```
+## 运行环境
 
-数据库集成测试需要独立的测试库：
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/)
+- Node.js 和 pnpm（构建 Web 前端时需要）
+- PostgreSQL（可选；本地使用 SQLite 时不需要）
 
-```bash
-TEST_DATABASE_URL=postgresql+asyncpg://user:password@host:port/test_database uv run pytest tests/integration
-```
+## 快速开始
 
-## LLM 配置
-
-QA 和 Instruction 生成器使用兼容接口。`.env.example` 列出模型地址、密钥、模型名称、温度、输出上限、超时、并发上限和重试次数。本地无需认证的兼容服务可以省略密钥。`LLM_CONCURRENCY_LIMIT` 控制同时进行的内容块模型请求数，修改后重启服务。对于支持 JSON 输出模式的服务，可设置 `LLM_JSON_MODE=true`；对于支持思考开关的 DeepSeek 服务，可设置 `LLM_THINKING=false`，避免短输出上限被思考内容耗尽。若出现输出截断提示，可提高 `LLM_MAX_TOKENS`。其他兼容服务不支持思考参数时，不要设置 `LLM_THINKING`。
-
-## CLI 工作流
-
-```bash
-uv run dataset-builder build input.md --generator qa --project-name example
-uv run dataset-builder build input.md --generator qa --multi-turn --project-name multi-turn-example
-uv run dataset-builder list PROJECT_ID
-uv run dataset-builder show SAMPLE_ID
-uv run dataset-builder edit SAMPLE_ID --messages-file messages.json
-uv run dataset-builder review SAMPLE_ID approved
-uv run dataset-builder export PROJECT_ID --format sharegpt --output dataset.jsonl
-```
-
-`build` 输出项目和运行 ID。生成样本默认为待审核；`list` 和 `show` 显示来源 Chunk 与校验问题。编辑文件是消息数组，例如 `[{"role":"user","content":"问题"},{"role":"assistant","content":"答案"}]`。编辑后重新清洗、去重和校验，审核状态回到待审核。还可使用 `review SAMPLE_ID rejected`、`delete SAMPLE_ID`、`restore SAMPLE_ID`；Chunk 生成失败后用 `retry PROJECT_ID` 仅重试失败或未完成的 Chunk。导出只包含审核通过、校验通过且未软删除的样本。
-
-JSON 和 JSONL 导入需显式选择内容字段，支持用点号指定嵌套对象字段；CSV 导入需指定一个或多个内容列：
+### 1. 安装依赖
 
 ```bash
-uv run dataset-builder build articles.json --content-field article.body
-uv run dataset-builder build articles.jsonl --content-field text
-uv run dataset-builder build articles.csv --content-column title --content-column body
-uv run dataset-builder build articles.jsonl --content-field text --parser-workers 4
-```
-
-JSON 根节点可以是单个对象或对象数组。JSONL 每个非空行是一个对象。CSV 将选中的列按 `列名: 值` 拼成文档内容。缺失字段或非字符串内容会报错；每条结构化记录的行号或数组索引会保留在来源元数据中。
-
-`--parser-workers` 和页面中的“解析工作线程数”可设为 1 到 16；结构化文件的独立记录及多个文档的切分可并行处理。单个 TXT 或 Markdown 文件本身只有一个解析任务，增加解析线程数不会加快该文件的读取；这类任务主要通过模型请求并发数加快生成阶段。
-
-## Web 工作台与 API
-
-前端使用 pnpm、Vue 和 Element Plus。首次启动或前端代码变更后，先构建静态资源：
-
-```bash
+uv sync --group dev
 cd frontend
 pnpm install --frozen-lockfile
-pnpm build
 cd ..
 ```
 
-Linux 与 Windows 的独立桌面发布包构建方式见 [桌面发布打包说明](docs/PACKAGING.md)。
+### 2. 配置数据库
 
-完成数据库迁移、LLM 配置和前端构建后启动服务：
+本地体验推荐 SQLite。在项目根目录创建 `.env`：
+
+```dotenv
+DATABASE_PROVIDER=sqlite
+SQLITE_PATH=dataset-builder.sqlite3
+EXPORT_DIR=exports
+```
+
+如需使用 PostgreSQL：
+
+```dotenv
+DATABASE_PROVIDER=postgresql
+DATABASE_URL=postgresql+asyncpg://dataset_builder:password@127.0.0.1:5432/dataset_builder
+EXPORT_DIR=exports
+```
+
+数据库配置在进程启动时读取。切换数据库后需要重启服务并对目标数据库单独执行迁移；项目不会在 SQLite 和 PostgreSQL 之间自动迁移。
+
+### 3. 启动 Web 工作台
 
 ```bash
 ./web.sh
 ```
 
-默认监听 `127.0.0.1:8000`。可以通过环境变量调整监听地址、端口和日志级别，并可在末尾继续传递 Uvicorn 参数：
+脚本会构建前端、执行 Alembic 迁移并启动服务。默认访问：
+
+- 工作台：<http://127.0.0.1:8000/>
+- OpenAPI 文档：<http://127.0.0.1:8000/docs>
+
+可通过环境变量修改监听地址、端口和日志等级：
 
 ```bash
 WEB_HOST=0.0.0.0 WEB_PORT=8080 WEB_LOG_LEVEL=info ./web.sh
 ```
 
-等价的完整命令为：
+启动后，先在“模型配置”中添加 OpenAI、Qwen、DeepSeek、vLLM、Ollama 或其他兼容 OpenAI API 的模型服务，再创建数据集。API Key 不会通过模型列表接口返回。
 
-```bash
-uv run uvicorn dataset_builder.api:app --host 127.0.0.1 --port 8000 --no-access-log --log-level warning
+## Web 使用流程
+
+1. 在“模型配置”中添加并测试模型服务。
+2. 在“新建数据集”中上传源文件；已有训练样本导入支持一次选择多个 JSON/JSONL 文件。
+3. 选择解析字段、切分方式、生成策略和提示词。
+4. 使用构建前预览检查 Chunk；可选择最多 3 个 Chunk 试生成。
+5. 启动完整构建并查看后台进度及失败原因。
+6. 在项目页检查质量概览，编辑并审核样本。
+7. 创建不可变数据集版本，或直接导出审核通过的数据。
+8. 按需要导出 Alpaca/ShareGPT JSON/JSONL，或生成 LLaMA-Factory 训练包。
+
+默认导出范围仅包含：校验通过、人工审核通过、未删除且未被替代的样本。多轮对话可无损导出为 ShareGPT；无法无损表达为 Alpaca 的样本会返回明确错误，不会被静默截断。
+
+## CLI 使用
+
+CLI 构建和重试使用环境变量中的默认 OpenAI Compatible 模型配置。在 `.env` 中补充：
+
+```dotenv
+LLM_BASE_URL=https://api.example.com/v1
+LLM_API_KEY=your-api-key
+LLM_MODEL=your-model
+LLM_TEMPERATURE=0.7
+LLM_MAX_TOKENS=1024
+LLM_TIMEOUT=60
+LLM_CONCURRENCY_LIMIT=4
+LLM_MAX_RETRIES=2
+LLM_JSON_MODE=false
 ```
 
-打开 `http://127.0.0.1:8000/` 导入文件、预览和编辑消息、审核样本并下载导出文件。API 文档位于 `/docs`。上传完成后会立即返回项目和运行 ID；页面每隔约一秒查询运行状态，显示处理阶段、内容块数量和失败详情。也可调用 `GET /api/runs/{run_id}` 查询进度。构建在 Web 服务进程内执行；服务中断后，已切分的任务可以重试剩余内容块，切分前中断则需要重新上传。导出文件默认保存在项目目录下的 `exports/`，该目录已被 Git 忽略。
+构建数据集：
 
-样本列表提供“本页通过、拒绝、待审核、删除、恢复”，每次只操作当前显示的样本；校验失败或已删除的样本会被跳过，不能批量通过。
+```bash
+uv run dataset-builder build input.md \
+  --project-name example \
+  --generator qa \
+  --splitter auto \
+  --max-chars 1000
+```
 
-工作台侧边栏现提供独立的“模型配置”“提示词配置”“处理设置”和“回收站”。模型可新增、编辑、归档并设置默认值；编辑后的旧版本保留供历史任务重试。提示词可从内置预设选择，也可创建和管理自定义模板。模板可设为单轮或多轮；创建数据集和扩增时可临时覆盖该设置，多轮完整保留在同一条 ShareGPT 样本中。项目页还提供“教师答案蒸馏”：它只从审核和校验均通过的样本中选择原样本，不向教师暴露旧回答，由教师根据来源和原问题独立作答；多轮样本逐轮生成，新候选必须人工审核，通过后才替代原样本。解析线程数在处理设置中统一设定，模型请求并发上限按模型设定。创建数据集时只需选择模型和提示词；处理设置会自动用于新任务。项目可移入回收站并恢复，来源、样本和导出记录均保留。升级数据库请运行 `uv run alembic upgrade head`。
+结构化文件可指定字段或列：
 
-教师候选生成后，在项目页点击“蒸馏对比审核”，可同屏查看来源、原回答和教师回答。选择“采用教师回答”会替代原样本；“保留原回答”会拒绝教师候选；“两者保留”会批准教师候选但不替代原样本。
+```bash
+uv run dataset-builder build articles.jsonl --content-field article.body
+uv run dataset-builder build records.csv --content-column title --content-column content
+```
 
-审核完成后可在项目页打开“版本快照”，为当前可导出样本创建不可变版本。版本可以相互比较，也可以按当前选择的 Alpaca/ShareGPT 与 JSON/JSONL 格式独立导出；之后编辑当前数据集不会改变旧版本内容。
+常用审核和导出命令：
 
-新增或编辑模型时，可选择阿里云百炼（Qwen）、DeepSeek、智谱 AI、MiniMax 或自定义兼容服务，预设会填入名称和接口地址。填写地址和 API Key 后点击“拉取模型”，页面会通过后端请求该服务的标准 `GET /models` 接口供选择；服务不支持该接口时可继续手动填写模型名称。编辑配置时若修改接口地址，拉取前需要重新填写 API Key。
+```bash
+uv run dataset-builder list PROJECT_ID
+uv run dataset-builder show SAMPLE_ID
+uv run dataset-builder review SAMPLE_ID approved
+uv run dataset-builder retry PROJECT_ID
+uv run dataset-builder export PROJECT_ID --format sharegpt --output exports/dataset.jsonl
+```
 
-模型配置页会在打开时检查每个已启用配置的标准 `GET /models` 接口，并在卡片上显示连接状态；可使用“刷新状态”或单卡“刷新连接”再次检查。该检查不调用模型生成接口，也不消耗生成额度。
+查看全部参数：
+
+```bash
+uv run dataset-builder --help
+uv run dataset-builder build --help
+```
+
+## 手动启动与前端开发
+
+已有前端产物时，可手动迁移并启动后端：
+
+```bash
+uv run alembic upgrade head
+uv run uvicorn dataset_builder.api:app --host 127.0.0.1 --port 8000
+```
+
+开发前端：
+
+```bash
+cd frontend
+pnpm dev
+```
+
+生成生产前端资源：
+
+```bash
+cd frontend
+pnpm build
+```
+
+## 测试与代码检查
+
+```bash
+uv run ruff check .
+uv run pytest
+pnpm --dir frontend build
+```
+
+PostgreSQL 集成测试需要提供独立测试数据库：
+
+```bash
+TEST_DATABASE_URL=postgresql+asyncpg://user:password@127.0.0.1:5432/dataset_builder_test uv run pytest
+```
+
+不要让测试数据库指向保存真实数据的数据库。
+
+## 桌面发布包
+
+项目提供 Linux 和 Windows 的 PyInstaller、Nuitka 构建脚本。桌面发布包默认使用用户数据目录中的 SQLite，首次启动时会自动执行迁移，并在浏览器中打开本地工作台。
+
+详细构建方式见 [docs/PACKAGING.md](docs/PACKAGING.md)。
+
+## 项目结构
+
+```text
+src/dataset_builder/
+├── application/       # 构建、审核、扩增、蒸馏、版本等应用服务
+├── parsers/           # TXT、Markdown、JSON、JSONL、CSV 解析
+├── splitters/         # 内容切分
+├── generators/        # QA、Instruction、多轮生成
+├── cleaners/          # 清洗与精确去重
+├── validators/        # 统一 IR 与导出兼容性校验
+├── formatters/        # Alpaca、ShareGPT 格式转换
+├── exporters/         # JSON、JSONL 文件输出
+├── training_targets/  # LLaMA-Factory 训练包
+├── db/                # SQLAlchemy ORM 与会话
+├── api.py             # FastAPI 入口
+├── cli.py             # CLI 入口
+└── desktop.py         # 桌面发布包入口
+```
+
+更多设计与进度信息：
+
+- [产品需求](docs/PROJECT_SPEC.md)
+- [架构设计](docs/ARCHITECTURE.md)
+- [开发进度](docs/PROGRESS.md)
+- [桌面打包](docs/PACKAGING.md)
+
+
+## 安全提示
+
+- 不要将 API Key、数据库密码或 `.env` 提交到 Git。
+- 对外网开放服务前，请自行增加反向代理、访问控制和 HTTPS。本项目当前以个人部署和本地使用为主，不包含复杂多租户权限系统。
+- 真实模型调用可能产生费用；建议先使用生成前预览和少量试生成确认配置。
