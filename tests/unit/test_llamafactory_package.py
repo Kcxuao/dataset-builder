@@ -69,3 +69,32 @@ def test_llamafactory_config_rejects_unsafe_output_directory() -> None:
             template="qwen",
             output_dir_name="../outside",
         ).validate()
+
+
+@pytest.mark.asyncio
+async def test_build_dpo_package_writes_ranking_dataset_and_dpo_config(tmp_path) -> None:
+    async def preference_records():
+        yield {
+            "conversations": [{"from": "human", "value": "问题"}],
+            "chosen": {"from": "gpt", "value": "好回答"},
+            "rejected": {"from": "gpt", "value": "差回答"},
+        }
+
+    destination = tmp_path / "dpo.zip"
+    config = LLaMAFactoryConfig(model_name_or_path="Qwen/Qwen3-8B", template="qwen", pref_beta=0.2)
+    await LLaMAFactoryPackageBuilder().build(
+        preference_records(), destination, config, version_id="dpo-id", version_name="dpo-v1",
+        created_at=datetime(2026, 9, 22, tzinfo=UTC), dataset_type="dpo",
+    )
+
+    with zipfile.ZipFile(destination) as package:
+        assert "train_dpo.yaml" in package.namelist()
+        info = json.loads(package.read("data/dataset_info.json"))["dataset_builder_sft"]
+        assert info["ranking"] is True
+        assert info["columns"] == {
+            "messages": "conversations", "chosen": "chosen", "rejected": "rejected"
+        }
+        yaml = package.read("train_dpo.yaml").decode()
+        assert "stage: dpo" in yaml
+        assert "pref_beta: 0.2" in yaml
+        assert "pref_loss: sigmoid" in yaml

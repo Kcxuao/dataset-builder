@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy import Text, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from dataset_builder.application.preferences import PreferenceService
 from dataset_builder.cleaners import BasicCleaner
 from dataset_builder.db.orm import ChunkRow, ProjectRow, TrainingSampleRow, ValidationIssueRow
 from dataset_builder.models import Message, ReviewStatus, TrainingSample, utc_now
@@ -120,8 +121,12 @@ class ReviewService:
         if decision == "adopt_teacher":
             source.superseded_at = utc_now()
             source.updated_at = utc_now()
+        pair, skip_reason = await PreferenceService(self.session).create_from_distillation(row, source, decision)
         await self.session.flush()
-        return await self._distillation_comparison(row)
+        result = await self._distillation_comparison(row)
+        result["preference_pair_id"] = str(pair.id) if pair else None
+        result["preference_skip_reason"] = skip_reason
+        return result
 
     async def edit(self, sample_id: UUID, messages: list[Message]) -> dict[str, object]:
         row = await self._row(sample_id)

@@ -14,7 +14,20 @@ class ReviewSession:
     async def get(self, model: type, row_id: UUID) -> object | None:
         return self.rows.get((model, row_id))
 
-    async def flush(self) -> None:
+    async def scalar(self, _query) -> object | None:
+        return None
+
+    def add(self, row: object) -> None:
+        self.rows[(type(row), row.id)] = row
+
+    def add_all(self, rows) -> None:
+        for row in rows:
+            self.add(row)
+
+    async def execute(self, _query) -> None:
+        return None
+
+    async def flush(self, _rows=None) -> None:
         self.flushed = True
 
 

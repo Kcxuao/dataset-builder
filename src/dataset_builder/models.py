@@ -70,6 +70,12 @@ class ExportStatus(StrEnum):
 class ExportFormat(StrEnum):
     ALPACA = "alpaca"
     SHAREGPT = "sharegpt"
+    SHAREGPT_PREFERENCE = "sharegpt_preference"
+
+
+class DatasetType(StrEnum):
+    SFT = "sft"
+    DPO = "dpo"
 
 
 class ExportFileType(StrEnum):
@@ -117,6 +123,27 @@ class TrainingSample(BaseModel):
     is_deleted: bool = False
     parent_sample_id: UUID | None = None
     generation_run_id: UUID | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class PreferencePair(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
+    project_id: UUID
+    context_messages: list[Message]
+    chosen_response: Message
+    rejected_response: Message
+    chosen_sample_id: UUID | None = None
+    rejected_sample_id: UUID | None = None
+    document_id: UUID | None = None
+    chunk_id: UUID | None = None
+    source_type: str = "manual"
+    source_decision_id: UUID | None = None
+    content_hash: str | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
+    review_status: ReviewStatus = ReviewStatus.PENDING
+    validation_status: ValidationStatus = ValidationStatus.PENDING
+    is_deleted: bool = False
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

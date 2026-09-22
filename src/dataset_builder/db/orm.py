@@ -145,6 +145,47 @@ class ValidationIssueRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class PreferencePairRow(Base):
+    __tablename__ = "preference_pairs"
+    __table_args__ = (
+        Index("ix_preference_pairs_search", "project_id", "review_status", "validation_status", "is_deleted"),
+        Index("ix_preference_pairs_hash", "project_id", "content_hash"),
+        UniqueConstraint("source_decision_id", name="uq_preference_pairs_source_decision"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), index=True)
+    context_messages: Mapped[list] = mapped_column(JSON_TYPE)
+    chosen_response: Mapped[dict] = mapped_column(JSON_TYPE)
+    rejected_response: Mapped[dict] = mapped_column(JSON_TYPE)
+    chosen_sample_id: Mapped[UUID | None] = mapped_column(ForeignKey("training_samples.id"))
+    rejected_sample_id: Mapped[UUID | None] = mapped_column(ForeignKey("training_samples.id"))
+    document_id: Mapped[UUID | None] = mapped_column(ForeignKey("source_documents.id"), index=True)
+    chunk_id: Mapped[UUID | None] = mapped_column(ForeignKey("chunks.id"), index=True)
+    source_type: Mapped[str] = mapped_column(String(32), default="manual")
+    source_decision_id: Mapped[UUID | None] = mapped_column(ForeignKey("training_samples.id"))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    metadata_: Mapped[dict] = mapped_column("metadata", JSON_TYPE, default=dict)
+    review_status: Mapped[str] = mapped_column(String(32), default="pending")
+    validation_status: Mapped[str] = mapped_column(String(32), default="pending")
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class PreferenceValidationIssueRow(Base):
+    __tablename__ = "preference_validation_issues"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    pair_id: Mapped[UUID] = mapped_column(ForeignKey("preference_pairs.id"), index=True)
+    rule: Mapped[str] = mapped_column(String(100))
+    severity: Mapped[str] = mapped_column(String(16))
+    message: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class PipelineRunRow(Base):
     __tablename__ = "pipeline_runs"
 
@@ -205,6 +246,7 @@ class DatasetVersionRow(Base):
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), index=True)
     name: Mapped[str] = mapped_column(String(100))
     description: Mapped[str | None] = mapped_column(Text)
+    dataset_type: Mapped[str] = mapped_column(String(16), default="sft", server_default="sft")
     sample_count: Mapped[int] = mapped_column(Integer, default=0)
     statistics: Mapped[dict] = mapped_column(JSON_TYPE, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -226,6 +268,25 @@ class DatasetVersionSampleRow(Base):
     messages: Mapped[list] = mapped_column(JSON_TYPE)
     metadata_: Mapped[dict] = mapped_column("metadata", JSON_TYPE, default=dict)
     content_hash: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DatasetVersionPreferenceRow(Base):
+    __tablename__ = "dataset_version_preferences"
+    __table_args__ = (
+        UniqueConstraint("version_id", "pair_id", name="uq_dataset_version_preferences_pair"),
+        Index("ix_dataset_version_preferences_ordinal", "version_id", "ordinal"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    version_id: Mapped[UUID] = mapped_column(ForeignKey("dataset_versions.id"), index=True)
+    pair_id: Mapped[UUID] = mapped_column(ForeignKey("preference_pairs.id"))
+    ordinal: Mapped[int] = mapped_column(Integer)
+    context_messages: Mapped[list] = mapped_column(JSON_TYPE)
+    chosen_response: Mapped[dict] = mapped_column(JSON_TYPE)
+    rejected_response: Mapped[dict] = mapped_column(JSON_TYPE)
+    metadata_: Mapped[dict] = mapped_column("metadata", JSON_TYPE, default=dict)
+    content_hash: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

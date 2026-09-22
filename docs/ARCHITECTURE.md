@@ -148,6 +148,10 @@ class Formatter(Protocol):
 
 版本是不可变发布快照。`dataset_versions` 保存项目、名称、说明、样本总数和来源统计；`dataset_version_samples` 按稳定顺序复制样本 messages、metadata、content hash 及文档/Chunk/原样本标识。版本导出只读取快照表，因此后续编辑、删除或替代当前样本不会改变旧版本文件。版本比较以 sample ID 和内容哈希识别新增、移除、变化，并通过蒸馏来源血缘识别替代。
 
+### PreferencePair / DatasetVersionPreference
+
+`PreferencePair` 独立保存完全相同的共同上下文、chosen/rejected assistant 回答、审核校验状态、内容哈希和来源血缘。蒸馏审核决定和手工输入都复制内容形成稳定偏好事实，不动态引用 SFT 当前内容。`DatasetVersion` 通过 `dataset_type` 区分 SFT 与 DPO；DPO 快照写入 `dataset_version_preferences`，只允许同类型版本比较。
+
 ### ValidationIssue
 
 - id

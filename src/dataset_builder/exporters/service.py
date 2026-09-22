@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataset_builder.db.orm import (
+    DatasetVersionPreferenceRow,
     DatasetVersionRow,
     DatasetVersionSampleRow,
     ExportRecordRow,
@@ -15,8 +16,8 @@ from dataset_builder.db.orm import (
     TrainingSampleRow,
 )
 from dataset_builder.exporters.files import JSONExporter, JSONLExporter
-from dataset_builder.formatters import AlpacaFormatter, ShareGPTFormatter
-from dataset_builder.models import ExportFileType, ExportFormat, ExportRecord, TrainingSample, utc_now
+from dataset_builder.formatters import AlpacaFormatter, ShareGPTFormatter, ShareGPTPreferenceFormatter
+from dataset_builder.models import ExportFileType, ExportFormat, ExportRecord, PreferencePair, TrainingSample, utc_now
 
 
 class SampleExportService:
@@ -36,6 +37,8 @@ class SampleExportService:
         project = await self.session.get(ProjectRow, project_id)
         if project is None or project.deleted_at is not None:
             raise LookupError("数据集不存在")
+        if format == ExportFormat.SHAREGPT_PREFERENCE:
+            raise ValueError("偏好数据必须先创建 DPO 版本再导出")
         formatter = AlpacaFormatter() if format == ExportFormat.ALPACA else ShareGPTFormatter()
         exporter = JSONLExporter() if file_type == ExportFileType.JSONL else JSONExporter()
         record = ExportRecordRow(
@@ -112,7 +115,14 @@ class SampleExportService:
         project = await self.session.get(ProjectRow, version.project_id)
         if project is None or project.deleted_at is not None:
             raise LookupError("数据集不存在")
-        formatter = AlpacaFormatter() if format == ExportFormat.ALPACA else ShareGPTFormatter()
+        if version.dataset_type == "dpo":
+            if format != ExportFormat.SHAREGPT_PREFERENCE:
+                raise ValueError("DPO 版本只能导出 ShareGPT Preference 格式")
+            formatter = ShareGPTPreferenceFormatter()
+        else:
+            if format == ExportFormat.SHAREGPT_PREFERENCE:
+                raise ValueError("SFT 版本不能导出偏好数据格式")
+            formatter = AlpacaFormatter() if format == ExportFormat.ALPACA else ShareGPTFormatter()
         exporter = JSONLExporter() if file_type == ExportFileType.JSONL else JSONExporter()
         record = ExportRecordRow(
             project_id=version.project_id,
@@ -123,6 +133,26 @@ class SampleExportService:
         self.session.add(record)
 
         async def formatted_records() -> AsyncIterator[dict[str, object]]:
+            if version.dataset_type == "dpo":
+                query = (
+                    select(DatasetVersionPreferenceRow)
+                    .where(DatasetVersionPreferenceRow.version_id == version_id)
+                    .order_by(DatasetVersionPreferenceRow.ordinal)
+                    .execution_options(yield_per=self.batch_size)
+                )
+                rows = await self.session.stream_scalars(query)
+                try:
+                    async for row in rows:
+                        pair = PreferencePair.model_validate({
+                            "id": row.pair_id, "project_id": version.project_id,
+                            "context_messages": row.context_messages, "chosen_response": row.chosen_response,
+                            "rejected_response": row.rejected_response, "metadata": row.metadata_,
+                            "content_hash": row.content_hash,
+                        })
+                        yield formatter.format(pair)
+                finally:
+                    await rows.close()
+                return
             query = (
                 select(DatasetVersionSampleRow)
                 .where(DatasetVersionSampleRow.version_id == version_id)

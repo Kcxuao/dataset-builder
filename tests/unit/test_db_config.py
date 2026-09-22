@@ -11,6 +11,7 @@ def test_schema_contains_core_tables_and_lineage_foreign_keys() -> None:
         "validation_issues", "pipeline_runs", "export_records", "model_configs",
         "workspace_settings", "prompt_templates", "augmentation_jobs", "distillation_jobs",
         "dataset_versions", "dataset_version_samples",
+        "preference_pairs", "preference_validation_issues", "dataset_version_preferences",
     }
     foreign_keys = {
         fk.target_fullname for fk in Base.metadata.tables["training_samples"].foreign_keys
@@ -22,6 +23,8 @@ def test_schema_contains_core_tables_and_lineage_foreign_keys() -> None:
     assert job_keys == {"pipeline_runs.id", "training_samples.id"}
     version_keys = {fk.target_fullname for fk in Base.metadata.tables["dataset_version_samples"].foreign_keys}
     assert version_keys == {"dataset_versions.id", "training_samples.id", "source_documents.id", "chunks.id"}
+    preference_keys = {fk.target_fullname for fk in Base.metadata.tables["preference_pairs"].foreign_keys}
+    assert preference_keys == {"projects.id", "training_samples.id", "source_documents.id", "chunks.id"}
 
 
 def test_engine_supports_postgres_and_async_sqlite_urls() -> None:

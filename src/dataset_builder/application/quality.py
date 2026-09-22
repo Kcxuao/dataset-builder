@@ -6,7 +6,14 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataset_builder.db.orm import ChunkRow, ProjectRow, SourceDocumentRow, TrainingSampleRow, ValidationIssueRow
+from dataset_builder.db.orm import (
+    ChunkRow,
+    PreferencePairRow,
+    ProjectRow,
+    SourceDocumentRow,
+    TrainingSampleRow,
+    ValidationIssueRow,
+)
 
 
 class QualitySummaryService:
@@ -94,6 +101,16 @@ class QualitySummaryService:
             await self.session.scalars(select(TrainingSampleRow.metadata_).where(*sample_conditions))
         ).all()
         distilled_count = sum(metadata.get("generator") == "distillation" for metadata in metadata_rows)
+        preference_rows = (await self.session.execute(
+            select(PreferencePairRow.review_status, PreferencePairRow.validation_status,
+                   PreferencePairRow.source_type, func.count())
+            .where(PreferencePairRow.project_id == project_id, PreferencePairRow.is_deleted.is_(False))
+            .group_by(
+                PreferencePairRow.review_status,
+                PreferencePairRow.validation_status,
+                PreferencePairRow.source_type,
+            )
+        )).all()
         chunks = Counter({status: count for status, count in chunk_rows})
         reviews = Counter()
         validations = Counter()
@@ -114,5 +131,13 @@ class QualitySummaryService:
                 "original": max(0, (original_count or 0) - distilled_count),
                 "augmented": augmented_count or 0,
                 "distilled": distilled_count,
+            },
+            "preferences": {
+                "total": sum(row[3] for row in preference_rows),
+                "pending": sum(row[3] for row in preference_rows if row[0] == "pending"),
+                "failed": sum(row[3] for row in preference_rows if row[1] == "failed"),
+                "exportable": sum(row[3] for row in preference_rows if row[0] == "approved" and row[1] == "passed"),
+                "distillation_review": sum(row[3] for row in preference_rows if row[2] == "distillation_review"),
+                "manual": sum(row[3] for row in preference_rows if row[2] == "manual"),
             },
         }

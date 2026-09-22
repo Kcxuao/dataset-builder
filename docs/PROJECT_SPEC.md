@@ -58,6 +58,8 @@ Export 数据集导出
 
 审核完成后可创建不可变的数据集版本快照。快照复制当时可导出样本的统一 IR、内容哈希和血缘标识，不依赖之后可能被编辑的当前样本；支持版本列表、两个版本的新增/移除/内容变化/蒸馏替代统计，以及从指定版本重复导出 JSON/JSONL 的 Alpaca 或 ShareGPT 数据。
 
+本轮增加 DPO 偏好数据：蒸馏对比审核中的“采用教师回答”和“保留原回答”在两版共享完全相同上下文时自动形成已审核偏好对；“两者保留”不表达偏好。用户也可手工创建偏好对，统一经过校验和审核。SFT 样本与 DPO 偏好对使用独立 IR 和独立类型的不可变版本；DPO 版本支持 ShareGPT Preference JSON/JSONL 和 LLaMA-Factory DPO 训练包。第一版不使用模型裁判，也不自动生成劣质回答。
+
 ### 4.1 文件导入
 
 第一阶段支持：
@@ -184,6 +186,8 @@ JSONL 必须流式或分批导出，避免将完整数据集一次性加载到�
 ```text
 SourceDocument → Chunk → TrainingSample
 ```
+
+DPO 偏好数据使用独立的 `PreferencePair`，包含共同 `context_messages`、单条 `chosen_response` 与 `rejected_response`，并关联来源样本、Chunk 和文档。不得把 chosen/rejected 塞入 SFT `TrainingSample.messages`。
 
 这样可以定位每条训练样本来自哪个文件和哪个 Chunk，并记录生成模型与相关信息。
 

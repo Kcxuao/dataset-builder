@@ -20,6 +20,7 @@ Dataset Builder 是一个轻量、模块化的 LLM 训练数据集构建工具�
 - 创建不可变数据集版本并比较版本差异
 - 导出 Alpaca/ShareGPT 的 JSON、JSONL 文件
 - 从数据集版本生成 LLaMA-Factory 训练包
+- 从蒸馏审核或手工输入构建 DPO 偏好对，并导出 Preference 数据与 DPO 训练包
 - 支持 PostgreSQL 标准部署和 SQLite 本地单机运行
 
 ## 运行环境

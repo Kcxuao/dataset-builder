@@ -2,7 +2,7 @@
 
 from typing import Protocol
 
-from dataset_builder.models import ExportFormat, TrainingSample, ValidationIssue
+from dataset_builder.models import ExportFormat, PreferencePair, TrainingSample, ValidationIssue
 from dataset_builder.validators import SampleValidator
 
 
@@ -40,4 +40,18 @@ class ShareGPTFormatter:
                 {"from": self.ROLE_MAP[str(message.role)], "value": message.content}
                 for message in sample.messages
             ]
+        }
+
+
+class ShareGPTPreferenceFormatter:
+    ROLE_MAP = ShareGPTFormatter.ROLE_MAP
+
+    def format(self, pair: PreferencePair) -> dict[str, object]:
+        return {
+            "conversations": [
+                {"from": self.ROLE_MAP[str(message.role)], "value": message.content}
+                for message in pair.context_messages
+            ],
+            "chosen": {"from": "gpt", "value": pair.chosen_response.content},
+            "rejected": {"from": "gpt", "value": pair.rejected_response.content},
         }

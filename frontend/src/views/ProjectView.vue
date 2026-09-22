@@ -54,13 +54,19 @@ const currentComparison = computed(() => comparisonItems.value[comparisonIndex.v
 const versionDialog = ref(false)
 const versionLoading = ref(false)
 const versions = ref([])
-const versionForm = reactive({ name: '', description: '' })
+const versionForm = reactive({ name: '', description: '', dataset_type: 'sft' })
 const versionCompare = reactive({ base_id: '', target_id: '' })
 const versionDiff = ref(null)
 const trainingPackageDialog = ref(false)
 const trainingPackageLoading = ref(false)
 const trainingPackageVersion = ref(null)
-const trainingPackageForm = reactive({ model_name_or_path: '', template: 'qwen', finetuning_type: 'lora', cutoff_len: 2048, num_train_epochs: 3, learning_rate: '1e-4', per_device_train_batch_size: 2, gradient_accumulation_steps: 8, output_dir_name: 'sft-output' })
+const trainingPackageForm = reactive({ model_name_or_path: '', template: 'qwen', finetuning_type: 'lora', cutoff_len: 2048, num_train_epochs: 3, learning_rate: '1e-4', per_device_train_batch_size: 2, gradient_accumulation_steps: 8, output_dir_name: 'sft-output', pref_beta: 0.1, pref_loss: 'sigmoid' })
+const preferenceDialog = ref(false)
+const preferenceLoading = ref(false)
+const preferences = ref([])
+const preferenceTotal = ref(0)
+const preferenceEditing = ref(null)
+const preferenceForm = reactive({ prompt: '', chosen: '', rejected: '' })
 const templatePresets = ['qwen', 'llama3', 'deepseek', 'chatml', 'gemma', 'mistral']
 let timer = null
 const activeStatuses = new Set(['created', 'importing', 'parsing', 'splitting', 'generating', 'augmenting', 'distilling', 'cleaning', 'validating'])
@@ -251,15 +257,61 @@ async function decideComparison(decision) {
   if (!currentComparison.value) return
   comparisonLoading.value = true
   try {
-    await api(`/api/samples/${currentComparison.value.id}/distillation-review`, jsonOptions('PATCH', { decision }))
+    const result = await api(`/api/samples/${currentComparison.value.id}/distillation-review`, jsonOptions('PATCH', { decision }))
     const labels = { adopt_teacher: '已采用教师回答', keep_original: '已保留原回答', keep_both: '已保留两个版本' }
     comparisonItems.value.splice(comparisonIndex.value, 1)
     comparisonTotal.value = Math.max(0, comparisonTotal.value - 1)
     if (comparisonIndex.value >= comparisonItems.value.length) comparisonIndex.value = Math.max(0, comparisonItems.value.length - 1)
     await Promise.all([loadSamples(), loadQuality()])
-    ElMessage.success(labels[decision])
+    ElMessage.success(result.preference_pair_id ? `${labels[decision]}，已生成 DPO 偏好对` : `${labels[decision]}${result.preference_skip_reason ? `；${result.preference_skip_reason}` : ''}`)
   } catch (error) { notifyError(error, ElMessage) }
   finally { comparisonLoading.value = false }
+}
+async function loadPreferences() {
+  preferenceLoading.value = true
+  try {
+    const result = await api(`/api/projects/${route.params.id}/preference-pairs?size=200`)
+    preferences.value = result.items; preferenceTotal.value = result.total; preferenceDialog.value = true
+  } catch (error) { notifyError(error, ElMessage) }
+  finally { preferenceLoading.value = false }
+}
+async function createPreference() {
+  preferenceLoading.value = true
+  try {
+    const payload = {
+      context_messages: [{ role: 'user', content: preferenceForm.prompt }],
+      chosen_response: { role: 'assistant', content: preferenceForm.chosen },
+      rejected_response: { role: 'assistant', content: preferenceForm.rejected },
+    }
+    const path = preferenceEditing.value ? `/api/preference-pairs/${preferenceEditing.value}` : `/api/projects/${route.params.id}/preference-pairs`
+    await api(path, jsonOptions(preferenceEditing.value ? 'PUT' : 'POST', payload))
+    preferenceForm.prompt = ''; preferenceForm.chosen = ''; preferenceForm.rejected = ''
+    preferenceEditing.value = null
+    await loadPreferences(); await loadQuality(); ElMessage.success('偏好对已保存，等待审核')
+  } catch (error) { notifyError(error, ElMessage) }
+  finally { preferenceLoading.value = false }
+}
+function editPreference(item) {
+  preferenceEditing.value = item.id
+  preferenceForm.prompt = item.context_messages.at(-1)?.content || ''
+  preferenceForm.chosen = item.chosen_response.content
+  preferenceForm.rejected = item.rejected_response.content
+}
+async function deletePreference(item) {
+  preferenceLoading.value = true
+  try {
+    await api(`/api/preference-pairs/${item.id}/deleted`, jsonOptions('PATCH', { is_deleted: true }))
+    await loadPreferences(); await loadQuality(); ElMessage.success('偏好对已移入删除状态')
+  } catch (error) { notifyError(error, ElMessage) }
+  finally { preferenceLoading.value = false }
+}
+async function reviewPreference(item, status) {
+  preferenceLoading.value = true
+  try {
+    await api(`/api/preference-pairs/${item.id}/review`, jsonOptions('PATCH', { status }))
+    await loadPreferences(); await loadQuality(); ElMessage.success('偏好对审核状态已更新')
+  } catch (error) { notifyError(error, ElMessage) }
+  finally { preferenceLoading.value = false }
 }
 async function openVersions() {
   versionLoading.value = true
@@ -296,7 +348,8 @@ async function compareVersions() {
 async function exportVersion(version) {
   versionLoading.value = true
   try {
-    const result = await api(`/api/versions/${version.id}/exports`, jsonOptions('POST', exportForm))
+    const payload = { ...exportForm, format: version.dataset_type === 'dpo' ? 'sharegpt_preference' : exportForm.format }
+    const result = await api(`/api/versions/${version.id}/exports`, jsonOptions('POST', payload))
     downloadUrl.value = result.download_url
     ElMessage.success(`版本 ${version.name} 已导出 ${result.sample_count} 条样本`)
     downloadExport()
@@ -305,7 +358,8 @@ async function exportVersion(version) {
 }
 function openTrainingPackage(version) {
   trainingPackageVersion.value = version
-  trainingPackageForm.output_dir_name = `${version.name.replace(/[^A-Za-z0-9._-]/g, '-').replace(/^-+/, '') || 'sft'}-output`.slice(0, 100)
+  const stage = version.dataset_type === 'dpo' ? 'dpo' : 'sft'
+  trainingPackageForm.output_dir_name = `${version.name.replace(/[^A-Za-z0-9._-]/g, '-').replace(/^-+/, '') || stage}-output`.slice(0, 100)
   trainingPackageDialog.value = true
 }
 async function buildTrainingPackage() {
@@ -366,7 +420,7 @@ onUnmounted(() => clearTimeout(timer))
   <div class="project-actions"><el-button type="primary" :icon="MagicStick"
       @click="openAugmentation">扩展数据集</el-button><el-button plain :icon="MagicStick"
       @click="openDistillation">教师答案蒸馏</el-button><el-button plain :icon="Check"
-      @click="openComparisonReview">蒸馏对比审核</el-button><el-button plain @click="openVersions">版本快照</el-button><el-button
+      @click="openComparisonReview">蒸馏对比审核</el-button><el-button plain @click="loadPreferences">DPO 偏好数据</el-button><el-button plain @click="openVersions">版本快照</el-button><el-button
       :icon="RefreshRight" @click="reload">刷新</el-button><el-button v-if="run?.failed_items" type="warning"
       :icon="RefreshRight" @click="retry">{{ run?.run_type === 'augmentation' ? '重试扩增任务' : run?.run_type ===
         'distillation' ? '重试蒸馏任务' : '重试失败内容块' }}</el-button><el-button type="danger" plain :icon="Delete"
@@ -656,6 +710,26 @@ onUnmounted(() => clearTimeout(timer))
       </div>
     </template>
   </el-dialog>
+  <el-dialog v-model="preferenceDialog" width="min(1080px, calc(100% - 28px))" destroy-on-close>
+    <template #header><div class="preview-dialog-title"><strong>DPO 偏好数据</strong><span>同一上下文中，明确选择更好的回答。</span></div></template>
+    <div v-loading="preferenceLoading" class="preference-workbench">
+      <aside class="preference-create"><h3>{{ preferenceEditing ? '编辑偏好对' : '手工创建偏好对' }}</h3><p>手工记录和编辑后的记录会进入待审核状态。</p>
+        <el-input v-model="preferenceForm.prompt" type="textarea" :rows="3" placeholder="共同的用户问题" />
+        <el-input v-model="preferenceForm.chosen" type="textarea" :rows="4" placeholder="Chosen：更好的回答" />
+        <el-input v-model="preferenceForm.rejected" type="textarea" :rows="4" placeholder="Rejected：较差的回答" />
+        <el-button type="primary" :disabled="!preferenceForm.prompt.trim() || !preferenceForm.chosen.trim() || !preferenceForm.rejected.trim()" @click="createPreference">{{ preferenceEditing ? '保存并重新审核' : '创建偏好对' }}</el-button><el-button v-if="preferenceEditing" @click="preferenceEditing = null; preferenceForm.prompt = ''; preferenceForm.chosen = ''; preferenceForm.rejected = ''">取消编辑</el-button>
+      </aside>
+      <main class="preference-list"><el-empty v-if="!preferences.length" description="还没有 DPO 偏好对" />
+        <article v-for="item in preferences" :key="item.id" class="preference-card">
+          <header><span>{{ item.source_type === 'distillation_review' ? '蒸馏审核' : '手工创建' }}</span><el-tag :type="sampleStatus(item)[1]">{{ sampleStatus(item)[0] }}</el-tag></header>
+          <p class="preference-prompt">{{ item.context_messages.at(-1)?.content }}</p>
+          <div class="preference-answers"><section><b>CHOSEN</b><p>{{ item.chosen_response.content }}</p></section><section><b>REJECTED</b><p>{{ item.rejected_response.content }}</p></section></div>
+          <el-alert v-for="issue in item.issues" :key="issue.rule" :title="issue.message" type="warning" :closable="false" />
+          <footer><el-button v-if="item.source_type === 'manual' && item.context_messages.length === 1" text @click="editPreference(item)">编辑</el-button><el-button text type="danger" @click="deletePreference(item)">删除</el-button><template v-if="item.review_status === 'pending'"><el-button @click="reviewPreference(item, 'rejected')">拒绝</el-button><el-button type="success" :disabled="item.validation_status !== 'passed'" @click="reviewPreference(item, 'approved')">通过</el-button></template></footer>
+        </article>
+      </main>
+    </div>
+  </el-dialog>
   <el-dialog v-model="versionDialog" class="version-dialog" width="min(1080px, calc(100% - 28px))" destroy-on-close>
     <template #header>
       <div class="preview-dialog-title"><strong>数据集版本</strong><span>把当前可导出样本冻结为不可变快照，用同一份内容重复导出。</span></div>
@@ -663,7 +737,7 @@ onUnmounted(() => clearTimeout(timer))
     <div v-loading="versionLoading" class="version-workbench">
       <aside class="version-create">
         <h3>创建发布快照</h3>
-        <p>只收录当前审核通过、校验通过、未删除且未替代的样本。</p><el-input v-model="versionForm.name" maxlength="100"
+        <p>只收录当前审核和校验均通过的数据。</p><el-segmented v-model="versionForm.dataset_type" :options="[{ label: 'SFT', value: 'sft' }, { label: 'DPO', value: 'dpo' }]" /><el-input v-model="versionForm.name" maxlength="100"
           placeholder="版本名称，例如 v1.0" /><el-input v-model="versionForm.description" type="textarea" :rows="3"
           maxlength="1000" placeholder="说明本次数据变化（可选）" /><el-button type="primary" :disabled="!versionForm.name.trim()"
           @click="createVersion">冻结当前版本</el-button>
@@ -676,7 +750,7 @@ onUnmounted(() => clearTimeout(timer))
         <div v-else class="version-list">
           <article v-for="version in versions" :key="version.id"><i />
             <div>
-              <div class="version-name"><strong>{{ version.name }}</strong><span>{{ version.sample_count }} 条</span>
+              <div class="version-name"><strong>{{ version.name }}</strong><el-tag size="small">{{ version.dataset_type?.toUpperCase() }}</el-tag><span>{{ version.sample_count }} 条</span>
               </div>
               <p>{{ version.description || '未填写版本说明' }}</p><small>{{ formatVersionDate(version.created_at) }} · 原始 {{
                 version.statistics?.origins?.original || 0 }} / 扩增 {{ version.statistics?.origins?.augmentation || 0 }}
@@ -723,7 +797,7 @@ onUnmounted(() => clearTimeout(timer))
           <div class="package-section-title"><span>01</span>
             <div>
               <h3>模型与适配</h3>
-              <p>这些值会写入 train_sft.yaml，下载后仍可修改。</p>
+              <p>这些值会写入 {{ trainingPackageVersion?.dataset_type === 'dpo' ? 'train_dpo.yaml' : 'train_sft.yaml' }}，下载后仍可修改。</p>
             </div>
           </div>
           <div class="package-fields"><label class="field-wide"><span>基础模型名称或路径</span><el-input
@@ -771,6 +845,8 @@ onUnmounted(() => clearTimeout(timer))
               <span>输出目录名</span>
               <el-input v-model="trainingPackageForm.output_dir_name" maxlength="100" />
             </label>
+            <label v-if="trainingPackageVersion?.dataset_type === 'dpo'"><span>DPO beta</span><el-input-number v-model="trainingPackageForm.pref_beta" :min="0.01" :max="10" :step="0.05" /></label>
+            <label v-if="trainingPackageVersion?.dataset_type === 'dpo'"><span>偏好损失</span><el-select v-model="trainingPackageForm.pref_loss"><el-option label="Sigmoid" value="sigmoid" /><el-option label="Hinge" value="hinge" /><el-option label="IPO" value="ipo" /></el-select></label>
           </div>
         </section>
       </main>
@@ -787,7 +863,7 @@ onUnmounted(() => clearTimeout(timer))
       </aside>
     </div>
     <template #footer>
-      <div class="training-package-footer"><span>ZIP 内含 data/、train_sft.yaml、manifest.json 与 README.md</span>
+      <div class="training-package-footer"><span>ZIP 内含 data/、训练 YAML、manifest.json 与 README.md</span>
         <div><el-button @click="trainingPackageDialog = false">取消</el-button><el-button type="primary" :icon="Download"
             :loading="trainingPackageLoading" :disabled="!trainingPackageForm.model_name_or_path.trim()"
             @click="buildTrainingPackage">生成并下载</el-button></div>

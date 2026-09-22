@@ -29,6 +29,7 @@ from dataset_builder.application.model_discovery import (
     ModelDiscoveryService,
     list_model_providers,
 )
+from dataset_builder.application.preferences import PreferenceService
 from dataset_builder.application.projects import ProjectService
 from dataset_builder.application.quality import QualitySummaryService
 from dataset_builder.application.review import ReviewService
@@ -97,6 +98,7 @@ class ExportPayload(BaseModel):
 class DatasetVersionPayload(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     description: str | None = Field(default=None, max_length=1000)
+    dataset_type: Literal["sft", "dpo"] = "sft"
 
 
 class LLaMAFactoryPackagePayload(BaseModel):
@@ -109,6 +111,16 @@ class LLaMAFactoryPackagePayload(BaseModel):
     per_device_train_batch_size: int = Field(default=2, ge=1, le=1024)
     gradient_accumulation_steps: int = Field(default=8, ge=1, le=1024)
     output_dir_name: str = Field(default="sft-output", min_length=1, max_length=100)
+    pref_beta: float = Field(default=0.1, gt=0, le=10)
+    pref_loss: Literal["sigmoid", "hinge", "ipo", "orpo", "simpo"] = "sigmoid"
+
+
+class PreferencePairPayload(BaseModel):
+    context_messages: list[Message] = Field(default_factory=list)
+    chosen_response: Message | None = None
+    rejected_response: Message | None = None
+    chosen_sample_id: UUID | None = None
+    rejected_sample_id: UUID | None = None
 
 
 class AugmentationPayload(BaseModel):
@@ -1365,6 +1377,107 @@ def create_app(
             except LookupError as exc:
                 raise api_error(exc) from exc
 
+    @app.get("/api/projects/{project_id}/preference-pairs")
+    async def list_preference_pairs(
+        project_id: UUID,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+        page: Annotated[int, Query(ge=1)] = 1,
+        size: Annotated[int, Query(ge=1, le=200)] = 20,
+        review_status: str | None = None,
+        validation_status: str | None = None,
+        source_type: str | None = None,
+        keyword: str | None = None,
+    ) -> dict:
+        async with factory() as session:
+            try:
+                return await PreferenceService(session).list(
+                    project_id, page=page, size=size, review_status=review_status,
+                    validation_status=validation_status, source_type=source_type, keyword=keyword,
+                )
+            except (ValueError, LookupError) as exc:
+                raise api_error(exc) from exc
+
+    @app.post("/api/projects/{project_id}/preference-pairs", status_code=201)
+    async def create_preference_pair(
+        project_id: UUID,
+        payload: PreferencePairPayload,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+    ) -> dict:
+        async with factory() as session:
+            try:
+                chosen = payload.chosen_response or Message(role="assistant", content="由所选样本填充")
+                rejected = payload.rejected_response or Message(role="assistant", content="由所选样本填充")
+                missing_responses = payload.chosen_response is None or payload.rejected_response is None
+                if not payload.chosen_sample_id and missing_responses:
+                    raise ValueError("手工填写偏好对时必须提供 chosen 和 rejected 回答")
+                result = await PreferenceService(session).create_manual(
+                    project_id, payload.context_messages, chosen, rejected,
+                    chosen_sample_id=payload.chosen_sample_id, rejected_sample_id=payload.rejected_sample_id,
+                )
+                await session.commit()
+                return result
+            except (ValueError, LookupError) as exc:
+                raise api_error(exc) from exc
+
+    @app.put("/api/preference-pairs/{pair_id}")
+    async def edit_preference_pair(
+        pair_id: UUID,
+        payload: PreferencePairPayload,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+    ) -> dict:
+        async with factory() as session:
+            try:
+                if payload.chosen_response is None or payload.rejected_response is None:
+                    raise ValueError("编辑偏好对时必须提供 chosen 和 rejected 回答")
+                result = await PreferenceService(session).edit(
+                    pair_id, payload.context_messages, payload.chosen_response, payload.rejected_response
+                )
+                await session.commit()
+                return result
+            except (ValueError, LookupError) as exc:
+                raise api_error(exc) from exc
+
+    @app.patch("/api/preference-pairs/{pair_id}/review")
+    async def review_preference_pair(
+        pair_id: UUID,
+        payload: ReviewPayload,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+    ) -> dict:
+        async with factory() as session:
+            try:
+                result = await PreferenceService(session).review(pair_id, payload.status)
+                await session.commit()
+                return result
+            except (ValueError, LookupError) as exc:
+                raise api_error(exc) from exc
+
+    @app.patch("/api/preference-pairs/{pair_id}/deleted")
+    async def delete_preference_pair(
+        pair_id: UUID,
+        payload: DeletedPayload,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+    ) -> dict:
+        async with factory() as session:
+            try:
+                result = await PreferenceService(session).set_deleted(pair_id, payload.is_deleted)
+                await session.commit()
+                return result
+            except LookupError as exc:
+                raise api_error(exc) from exc
+
+    @app.post("/api/projects/{project_id}/preference-pairs/backfill")
+    async def backfill_preference_pairs(
+        project_id: UUID,
+        factory: Annotated[async_sessionmaker[AsyncSession], Depends(sessions_for)],
+    ) -> dict:
+        async with factory() as session:
+            try:
+                result = await PreferenceService(session).backfill(project_id)
+                await session.commit()
+                return result
+            except (ValueError, LookupError) as exc:
+                raise api_error(exc) from exc
+
     @app.post("/api/projects/{project_id}/exports")
     async def export_project(
         project_id: UUID,
@@ -1407,7 +1520,9 @@ def create_app(
     ) -> dict:
         async with factory() as session:
             try:
-                result = await DatasetVersionService(session).create(project_id, payload.name, payload.description)
+                result = await DatasetVersionService(session).create(
+                    project_id, payload.name, payload.description, payload.dataset_type
+                )
                 await session.commit()
                 return result
             except (ValueError, LookupError) as exc:
@@ -1423,7 +1538,7 @@ def create_app(
         async with factory() as session:
             try:
                 return await DatasetVersionService(session).compare(project_id, base_id, target_id)
-            except LookupError as exc:
+            except (ValueError, LookupError) as exc:
                 raise api_error(exc) from exc
 
     @app.post("/api/versions/{version_id}/exports")

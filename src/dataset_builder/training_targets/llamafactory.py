@@ -28,6 +28,8 @@ class LLaMAFactoryConfig:
     per_device_train_batch_size: int = 2
     gradient_accumulation_steps: int = 8
     output_dir_name: str = "sft-output"
+    pref_beta: float = 0.1
+    pref_loss: str = "sigmoid"
 
     def validate(self) -> None:
         if not self.model_name_or_path.strip() or "\n" in self.model_name_or_path:
@@ -50,6 +52,10 @@ class LLaMAFactoryConfig:
             raise ValueError("梯度累积必须在 1 到 1024 之间")
         if not SAFE_NAME.fullmatch(self.output_dir_name):
             raise ValueError("输出目录名只能包含字母、数字、点、下划线和短横线")
+        if not 0 < self.pref_beta <= 10:
+            raise ValueError("DPO beta 必须大于 0 且不超过 10")
+        if self.pref_loss not in {"sigmoid", "hinge", "ipo", "orpo", "simpo"}:
+            raise ValueError("不支持的偏好损失类型")
 
 
 class LLaMAFactoryPackageBuilder:
@@ -64,6 +70,7 @@ class LLaMAFactoryPackageBuilder:
         version_id: str,
         version_name: str,
         created_at: datetime,
+        dataset_type: str = "sft",
     ) -> int:
         config.validate()
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -75,13 +82,15 @@ class LLaMAFactoryPackageBuilder:
             if sample_count == 0:
                 raise ValueError("数据集版本不包含可用于训练的样本")
             (data_dir / "dataset_info.json").write_text(
-                json.dumps(self._dataset_info(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+                json.dumps(self._dataset_info(dataset_type), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
             )
-            (workspace / "train_sft.yaml").write_text(self._training_yaml(config), encoding="utf-8")
+            config_name = "train_dpo.yaml" if dataset_type == "dpo" else "train_sft.yaml"
+            (workspace / config_name).write_text(self._training_yaml(config, dataset_type), encoding="utf-8")
             manifest = {
                 "schema_version": 1,
                 "target": "llamafactory",
                 "dataset_format": "sharegpt",
+                "dataset_type": dataset_type,
                 "version": {"id": version_id, "name": version_name, "created_at": created_at.isoformat()},
                 "sample_count": sample_count,
                 "training": asdict(config),
@@ -89,7 +98,9 @@ class LLaMAFactoryPackageBuilder:
             (workspace / "manifest.json").write_text(
                 json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
             )
-            (workspace / "README.md").write_text(self._readme(version_name, sample_count), encoding="utf-8")
+            (workspace / "README.md").write_text(
+                self._readme(version_name, sample_count, dataset_type), encoding="utf-8"
+            )
             try:
                 with tempfile.NamedTemporaryFile(dir=destination.parent, suffix=".zip", delete=False) as output:
                     temporary_zip = Path(output.name)
@@ -104,9 +115,8 @@ class LLaMAFactoryPackageBuilder:
                 raise
         return sample_count
 
-    def _dataset_info(self) -> dict[str, object]:
-        return {
-            self.DATASET_NAME: {
+    def _dataset_info(self, dataset_type: str) -> dict[str, object]:
+        info = {
                 "file_name": "dataset.jsonl",
                 "formatting": "sharegpt",
                 "columns": {"messages": "conversations"},
@@ -118,9 +128,12 @@ class LLaMAFactoryPackageBuilder:
                     "system_tag": "system",
                 },
             }
-        }
+        if dataset_type == "dpo":
+            info["ranking"] = True
+            info["columns"] = {"messages": "conversations", "chosen": "chosen", "rejected": "rejected"}
+        return {self.DATASET_NAME: info}
 
-    def _training_yaml(self, config: LLaMAFactoryConfig) -> str:
+    def _training_yaml(self, config: LLaMAFactoryConfig, dataset_type: str) -> str:
         def quote(value: str) -> str:
             return json.dumps(value, ensure_ascii=False)
 
@@ -130,12 +143,14 @@ class LLaMAFactoryPackageBuilder:
             "trust_remote_code: true",
             "",
             "### method",
-            "stage: sft",
+            f"stage: {'dpo' if dataset_type == 'dpo' else 'sft'}",
             "do_train: true",
             f"finetuning_type: {config.finetuning_type}",
         ]
         if config.finetuning_type == "lora":
             lines.append("lora_target: all")
+        if dataset_type == "dpo":
+            lines.extend([f"pref_beta: {config.pref_beta}", f"pref_loss: {config.pref_loss}"])
         lines.extend([
             "",
             "### dataset",
@@ -166,17 +181,19 @@ class LLaMAFactoryPackageBuilder:
         return "\n".join(lines)
 
     @staticmethod
-    def _readme(version_name: str, sample_count: int) -> str:
+    def _readme(version_name: str, sample_count: int, dataset_type: str) -> str:
+        config_name = "train_dpo.yaml" if dataset_type == "dpo" else "train_sft.yaml"
+        label = "DPO 偏好对" if dataset_type == "dpo" else "ShareGPT 样本"
         return f"""# LLaMA-Factory 训练包
 
-本包由 Dataset Builder 的不可变版本 `{version_name}` 生成，共 {sample_count} 条 ShareGPT 样本。
+本包由 Dataset Builder 的不可变版本 `{version_name}` 生成，共 {sample_count} 条 {label}。
 
 ## 使用方式
 
 1. 安装并进入 LLaMA-Factory 可运行环境。
 2. 保持本压缩包解压后的目录结构不变。
-3. 在解压目录中检查 `train_sft.yaml` 的模型路径和训练参数。
-4. 执行：`llamafactory-cli train train_sft.yaml`
+3. 在解压目录中检查 `{config_name}` 的模型路径和训练参数。
+4. 执行：`llamafactory-cli train {config_name}`
 
 本包不包含模型权重、LLaMA-Factory 程序或远程服务凭据，也不会自动启动训练。
 """
