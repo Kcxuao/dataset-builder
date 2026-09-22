@@ -1,6 +1,7 @@
 """HTTP entry point for the shared dataset building services."""
 
 import logging
+import os
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -321,7 +322,7 @@ def create_app(
     app.state.export_dir = export_dir or Path("exports")
     if sessions is not None:
         app.state.sessions = sessions
-    web_dir = Path(__file__).parent / "web"
+    web_dir = Path(os.environ.get("DATASET_BUILDER_WEB_DIR", Path(__file__).parent / "web"))
     app.mount("/static", StaticFiles(directory=web_dir), name="static")
 
     @app.get("/", include_in_schema=False)

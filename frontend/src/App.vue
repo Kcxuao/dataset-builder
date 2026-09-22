@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, provide, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowRight, Collection, DataAnalysis, Delete, Menu, Plus, Setting, Tickets } from '@element-plus/icons-vue'
+import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import { api, notifyError } from './api'
 
 const router = useRouter()
@@ -101,8 +102,9 @@ onMounted(() => loadProjects({ initial: true }))
       </div>
     </aside>
     <div v-if="mobileMenu" class="mobile-backdrop" @click="closeMobileMenu"></div>
-    <div class="main-area">
-      <header class="topbar">
+    <el-config-provider :locale="zhCn">
+      <div class="main-area">
+        <header class="topbar">
         <button ref="mobileMenuButton" class="mobile-menu-button" type="button" aria-label="打开菜单"
           aria-controls="workspace-sidebar" :aria-expanded="mobileMenu" @click="openMobileMenu"><el-icon>
             <Menu />
@@ -110,16 +112,17 @@ onMounted(() => loadProjects({ initial: true }))
         <div class="breadcrumbs">工作空间 <span>/</span> {{ heading[0] }}</div>
         <div class="topbar-right"><el-button type="primary" :icon="Plus" aria-label="新建数据集"
             @click="navigate('/create')">新建数据集</el-button></div>
-      </header>
-      <main class="content">
-        <div class="page-intro">
-          <div>
-            <h1>{{ heading[0] }}</h1>
-            <p>{{ heading[1] }}</p>
+        </header>
+        <main class="content">
+          <div class="page-intro">
+            <div>
+              <h1>{{ heading[0] }}</h1>
+              <p>{{ heading[1] }}</p>
+            </div>
           </div>
-        </div>
-        <router-view />
-      </main>
-    </div>
+          <router-view />
+        </main>
+      </div>
+    </el-config-provider>
   </div>
 </template>

@@ -64,6 +64,8 @@ pnpm build
 cd ..
 ```
 
+Linux 与 Windows 的独立桌面发布包构建方式见 [桌面发布打包说明](docs/PACKAGING.md)。
+
 完成数据库迁移、LLM 配置和前端构建后启动服务：
 
 ```bash
