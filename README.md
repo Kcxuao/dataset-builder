@@ -185,7 +185,7 @@ TEST_DATABASE_URL=postgresql+asyncpg://user:password@127.0.0.1:5432/dataset_buil
 
 项目提供 Linux 和 Windows 的 PyInstaller、Nuitka 构建脚本。桌面发布包默认使用用户数据目录中的 SQLite，首次启动时会自动执行迁移，并在浏览器中打开本地工作台。
 
-详细构建方式见 [docs/PACKAGING.md](docs/PACKAGING.md)。
+仓库同时提供 GitHub Actions 自动打包：可在 Actions 页面手动构建 Linux/Windows Artifact，推送 `v*` Tag 时会自动创建包含两个平台安装包的 GitHub Release。详细方式见 [docs/PACKAGING.md](docs/PACKAGING.md)。
 
 ## 项目结构
 

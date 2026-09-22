@@ -8,6 +8,26 @@
 
 桌面发布包可在“处理设置 → 数据存储”中选择 SQLite 或 PostgreSQL、测试连接并保存。保存时会再次验证连接，成功后写入用户数据目录下的 `database.json`；密码不会返回页面。新配置需要关闭并重新启动软件后生效，数据库之间不会自动复制项目数据。
 
+## GitHub Actions 自动打包
+
+仓库中的 `.github/workflows/package.yml` 使用 GitHub 托管的原生 Ubuntu 和 Windows Runner 并行生成 PyInstaller 发布包。
+
+- 在 GitHub 仓库的 **Actions → Package desktop applications → Run workflow** 中可手动执行。
+- 推送名称匹配 `v*` 的 Tag 时会自动构建，并创建同名 GitHub Release。
+- Linux 产物为 `dataset-builder-linux-x64.tar.gz`。
+- Windows 产物为 `dataset-builder-windows-x64.zip`。
+- 每次运行的 Artifact 默认保留 14 天；Tag 对应 Release 中的文件不受该 Artifact 保留期影响。
+- 流水线不需要数据库密码或 LLM API Key，使用仓库自动提供的 `GITHUB_TOKEN` 创建 Release。
+
+创建版本发布时，由用户在本地执行 Git 操作：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Tag 必须已经存在于远端，Release Job 会使用 `--verify-tag` 拒绝为不存在的 Tag 创建发布。由于 PyInstaller 不是交叉编译器，两个系统必须分别在对应 Runner 上构建；当前流水线不生成 macOS 版本。
+
 ## 前置条件
 
 - 使用 `uv sync --group dev` 安装 PyInstaller 与 Nuitka。

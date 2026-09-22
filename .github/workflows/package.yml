@@ -1,0 +1,104 @@
+name: Package desktop applications
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Package ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-latest
+            build_command: bash scripts/build-pyinstaller-linux.sh
+            archive_command: tar -czf dataset-builder-linux-x64.tar.gz -C dist/pyinstaller dataset-builder
+            archive_path: dataset-builder-linux-x64.tar.gz
+          - platform: windows-x64
+            runner: windows-latest
+            build_command: pwsh -File scripts/build-pyinstaller-windows.ps1
+            archive_command: Compress-Archive -Path dist/pyinstaller/dataset-builder -DestinationPath dataset-builder-windows-x64.zip
+            archive_path: dataset-builder-windows-x64.zip
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+
+      - name: Install Python dependencies
+        run: uv sync --frozen --group dev
+
+      - name: Install frontend dependencies
+        run: pnpm --dir frontend install --frozen-lockfile
+
+      - name: Build desktop application
+        run: ${{ matrix.build_command }}
+
+      - name: Create Windows distribution archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ${{ matrix.archive_command }}
+
+      - name: Create Linux distribution archive
+        if: runner.os != 'Windows'
+        shell: bash
+        run: ${{ matrix.archive_command }}
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dataset-builder-${{ matrix.platform }}
+          path: ${{ matrix.archive_path }}
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dataset-builder-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "${GITHUB_REF_NAME}" release-assets/* --generate-notes --verify-tag

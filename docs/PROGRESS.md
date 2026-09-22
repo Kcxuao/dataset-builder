@@ -102,6 +102,7 @@
 - 修复数据库状态接口因布尔型 `configurable` 与字符串返回类型声明冲突而触发的 FastAPI 响应校验错误，并增加接口回归测试。
 - 优化新建数据集页的宽屏布局：主表单与辅助栏采用固定内容栅格并统一标题边界，辅助栏吸顶且改为实时构建摘要，同时移除当前页面重复的新建按钮。
 - 统一数据集扩增与教师答案蒸馏的数量输入框为右侧垂直增减控件，并同步数字框定位容器与内部输入高度，修复 Grid 表单中下方按钮越出输入边界的问题。
+- 新增 GitHub Actions 桌面打包流水线：支持手动触发及 `v*` Tag，使用原生 Ubuntu/Windows Runner 并行生成 PyInstaller 压缩包、上传 Artifact，并在 Tag 构建成功后自动创建 GitHub Release；同步补充 README 与打包文档。本地 Linux PyInstaller 目录包及 `tar.gz` 压缩验证通过，Windows 构建和 GitHub 托管 Runner 待流水线首次运行验证。
 
 ## 下一步任务
 
